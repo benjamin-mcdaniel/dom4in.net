@@ -19,6 +19,18 @@ CONFIG_FILE = os.path.join(BASE_DIR, "config.local.json")
 CHARSET = "abcdefghijklmnopqrstuvwxyz"
 MAX_LENGTH = 6
 
+# Default DNS-over-HTTPS resolvers (you can override these in config.local.json)
+DEFAULT_DNS_RESOLVERS = [
+    {
+        "name": "cloudflare",
+        "url": "https://cloudflare-dns.com/dns-query",
+    },
+    {
+        "name": "google",
+        "url": "https://dns.google/resolve",
+    },
+]
+
 
 @dataclass
 class Pointer:
@@ -93,26 +105,63 @@ def generate_batch(pointer: Pointer) -> List[Tuple[str, str]]:
     return batch
 
 
-# --- Domain checks: stubs for now ---
+def build_doh_url(resolver_url: str, domain: str) -> str:
+    """Build a DNS-over-HTTPS URL for an A record lookup.
 
-
-def check_domain_dns(domain: str) -> Dict:
-    """Best-effort DNS/registration check using socket.getaddrinfo.
-
-    This is intentionally simple and uses only the Python standard library.
+    Both Cloudflare and Google support name/type query parameters returning DNS JSON.
     """
+    parsed = urllib.parse.urlparse(resolver_url)
+    base = f"{parsed.scheme}://{parsed.netloc}{parsed.path or ''}"
+    query = urllib.parse.urlencode({"name": domain, "type": "A"})
+    return f"{base}?{query}"
+
+
+def check_domain_dns(domain: str, resolver: Dict) -> Dict:
+    """DNS/registration check using DNS-over-HTTPS.
+
+    resolver is a dict with at least a 'url' key.
+    """
+    url = build_doh_url(resolver["url"], domain)
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/dns-json",
+            "User-Agent": "dom4in-collector/1.0",
+        },
+    )
+
     try:
-        # getaddrinfo will raise for NXDOMAIN / no records
-        socket.getaddrinfo(domain, None)
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            if resp.status != 200:
+                return {"resolver_error": True}
+            body = resp.read()
+    except (urllib.error.URLError, socket.timeout, ssl.SSLError):
+        return {"resolver_error": True}
+
+    try:
+        data = json.loads(body.decode("utf-8", errors="ignore"))
+    except Exception:
+        return {"resolver_error": True}
+
+    # Basic health: if the resolver returns malformed JSON or no Status, mark as error.
+    status_code = data.get("Status")
+    if status_code is None:
+        return {"resolver_error": True}
+
+    # Status 0 with at least one Answer means we treat as registered/has_dns.
+    if status_code == 0 and data.get("Answer"):
         return {
             "registered": True,
             "has_dns": True,
+            "resolver_error": False,
         }
-    except OSError:
-        return {
-            "registered": False,
-            "has_dns": False,
-        }
+
+    # Non-zero status or no answers: treat as no DNS/likely unregistered, but resolver is healthy.
+    return {
+        "registered": False,
+        "has_dns": False,
+        "resolver_error": False,
+    }
 
 
 def check_domain_http(domain: str) -> Dict:
@@ -286,6 +335,24 @@ def run(count: int, api_base: str, api_key: str, dry_run: bool = False) -> None:
 
     pointer = Pointer.load()
 
+    # Load DNS resolvers (from config if available, else defaults)
+    config_resolvers = []
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            config_resolvers = cfg.get("dns_resolvers", [])
+        except Exception:
+            config_resolvers = []
+
+    resolvers = config_resolvers or DEFAULT_DNS_RESOLVERS
+    if not resolvers:
+        print("Error: no DNS resolvers configured.")
+        return
+
+    resolver_index = 0
+    queries_with_current = 0
+
     remaining = count
     aggr = init_aggregates()
 
@@ -301,10 +368,27 @@ def run(count: int, api_base: str, api_key: str, dry_run: bool = False) -> None:
             if remaining <= 0:
                 break
 
+            # Rotate resolver every 25 queries
+            if queries_with_current >= 25:
+                resolver_index = (resolver_index + 1) % len(resolvers)
+                queries_with_current = 0
+
+            resolver = resolvers[resolver_index]
+
             label = domain.split(".")[0]
             length = len(label)
 
-            dns_info = check_domain_dns(domain)
+            dns_info = check_domain_dns(domain, resolver)
+            if dns_info.get("resolver_error"):
+                # Mark this resolver as unhealthy for this run and move on to the next
+                print(f"Resolver {resolver.get('name', resolver_index)} had an error, rotating.")
+                resolver_index = (resolver_index + 1) % len(resolvers)
+                queries_with_current = 0
+                # Try once more with the next resolver
+                dns_info = check_domain_dns(domain, resolvers[resolver_index])
+
+            queries_with_current += 1
+
             http_info = {"usage_state": "no_website", "product_state": "unknown"}
             if dns_info.get("registered"):
                 http_info = check_domain_http(domain)
