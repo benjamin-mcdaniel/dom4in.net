@@ -3,6 +3,7 @@ import json
 import os
 import socket
 import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -178,7 +179,8 @@ def check_domain_http(domain: str) -> Dict:
             status = resp.getcode() or 0
             content_type = resp.headers.get("Content-Type", "")
             body = resp.read(4096)  # read up to 4KB
-    except (urllib.error.URLError, socket.timeout, ssl.SSLError):
+    except (urllib.error.URLError, socket.timeout, ssl.SSLError, Exception):
+        # Any network/HTTP error, including RemoteDisconnected, is treated as no website.
         return {
             "usage_state": "no_website",
             "product_state": "unknown",
@@ -328,7 +330,7 @@ def reset_pointer() -> None:
         print("Pointer file does not exist; nothing to reset.")
 
 
-def run(count: int, api_base: str, api_key: str, dry_run: bool = False) -> None:
+def run(count: int, api_base: str, api_key: str, dry_run: bool = False, print_each: bool = False) -> None:
     if count <= 0:
         print("Nothing to do: count must be > 0")
         return
@@ -337,13 +339,16 @@ def run(count: int, api_base: str, api_key: str, dry_run: bool = False) -> None:
 
     # Load DNS resolvers (from config if available, else defaults)
     config_resolvers = []
+    per_request_delay_ms = 0
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             config_resolvers = cfg.get("dns_resolvers", [])
+            per_request_delay_ms = int(cfg.get("per_request_delay_ms", 0))
         except Exception:
             config_resolvers = []
+            per_request_delay_ms = 0
 
     resolvers = config_resolvers or DEFAULT_DNS_RESOLVERS
     if not resolvers:
@@ -393,8 +398,20 @@ def run(count: int, api_base: str, api_key: str, dry_run: bool = False) -> None:
             if dns_info.get("registered"):
                 http_info = check_domain_http(domain)
 
+            if print_each:
+                print(
+                    f"{domain} -> registered={dns_info.get('registered')}, "
+                    f"has_dns={dns_info.get('has_dns')}, "
+                    f"usage={http_info.get('usage_state')}, "
+                    f"product={http_info.get('product_state')}"
+                )
+
             update_aggregates(aggr, domain, tld, length, dns_info, http_info)
             remaining -= 1
+
+            # Optional small delay to avoid hammering endpoints too hard
+            if per_request_delay_ms > 0:
+                time.sleep(per_request_delay_ms / 1000.0)
 
     # Build payload for "today"
     date_str = datetime.now(timezone.utc).date().isoformat()
@@ -412,6 +429,7 @@ def main() -> None:
     parser.add_argument("--api-base", type=str, default=None, help="Base URL for the backend API (overrides config file)")
     parser.add_argument("--api-key", type=str, default=None, help="Admin API key for upload (overrides config file)")
     parser.add_argument("--dry-run", action="store_true", help="Do not POST to backend, just print payload")
+    parser.add_argument("--print-each", action="store_true", help="Print each domain and its classification as it is processed")
     parser.add_argument("--reset-pointer", action="store_true", help="Reset pointer to the beginning and exit")
 
     args = parser.parse_args()
@@ -436,7 +454,7 @@ def main() -> None:
         print("Error: admin API key is required. Set it in collector/config.local.json or pass --api-key.")
         return
 
-    run(args.count, api_base, api_key, dry_run=args.dry_run)
+    run(args.count, api_base, api_key, dry_run=args.dry_run, print_each=args.print_each)
 
 
 if __name__ == "__main__":

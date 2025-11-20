@@ -9,6 +9,9 @@
     h1 { font-size: 2rem; margin-bottom: 0.25rem; }
     h2 { margin-top: 2rem; margin-bottom: 0.5rem; }
     .subtitle { color: #9ca3af; margin-bottom: 1.5rem; }
+    nav { display: flex; gap: 1.5rem; align-items: center; margin-bottom: 1.5rem; }
+    nav a { font-size: 0.9rem; color: #9ca3af; text-decoration: none; }
+    nav a:hover { color: #e5e7eb; }
     .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
     .card { background: #020617; border-radius: 0.75rem; padding: 1rem 1.25rem; border: 1px solid #111827; }
     .card-label { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: #9ca3af; margin-bottom: 0.25rem; }
@@ -24,11 +27,16 @@
 </head>
 <body>
   <header>
-    <h1>dom4in.net</h1>
+    <nav>
+      <h1>dom4in.net</h1>
+      <a href="#overview">Overview</a>
+      <a href="#short-domains">Short domains</a>
+      <a href="#about">About</a>
+    </nav>
     <div class="subtitle">High-level stats on short and meaningful domains — like a market dashboard, without giving away the list.</div>
   </header>
 
-  <section>
+  <section id="overview">
     <div class="kpi-grid">
       <div class="card">
         <div class="card-label">Domains Tracked (Lifetime)</div>
@@ -41,13 +49,13 @@
     </div>
   </section>
 
-  <section>
-    <h2>1–6 Letter Domains Overview</h2>
+  <section id="short-domains">
+    <h2>1–6 Character Labels Overview</h2>
     <table>
       <thead>
         <tr>
           <th>Length</th>
-          <th>Total Possible</th>
+          <th>Possible Labels (a–z)</th>
           <th>Tracked</th>
           <th>Unregistered Found</th>
           <th>Unused / No Website</th>
@@ -59,6 +67,16 @@
     </table>
     <div id="status">Loading stats…</div>
     <div id="last-updated"></div>
+    <p style="margin-top: 0.75rem; font-size: 0.8rem; color: #6b7280; max-width: 40rem;">
+      "Possible labels" counts how many short strings of letters exist for each length using the current character set (a–z). Actual domain names include those labels across multiple TLDs; we aggregate across TLDs here rather than showing each extension separately.
+    </p>
+  </section>
+
+  <section id="about" style="margin-top: 2.5rem; max-width: 42rem; font-size: 0.9rem; color: #d1d5db;">
+    <h2>About this data</h2>
+    <p>
+      dom4in.net samples the short-domain space and reports high-level aggregates only. We currently focus on letter-based labels up to 6 characters and combine results across several major TLDs, so counts represent label coverage rather than a list of specific domains.
+    </p>
   </section>
 
   <script>

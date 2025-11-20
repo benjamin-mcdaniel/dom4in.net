@@ -9,7 +9,7 @@ database_id = ""       # Fill this in after creating the D1 database in Cloudfla
 
 [vars]
 # Placeholder for an admin API key used by the local uploader script
-ADMIN_API_KEY = "changeme-admin-key"
+
 
 [observability]
 enabled = true
