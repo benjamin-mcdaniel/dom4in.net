@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>dom4in.net – Domain Market Stats</title>
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; background: #050816; color: #f9fafb; }
+    h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+    h2 { margin-top: 2rem; margin-bottom: 0.5rem; }
+    .subtitle { color: #9ca3af; margin-bottom: 1.5rem; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .card { background: #020617; border-radius: 0.75rem; padding: 1rem 1.25rem; border: 1px solid #111827; }
+    .card-label { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: #9ca3af; margin-bottom: 0.25rem; }
+    .card-value { font-size: 1.25rem; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+    th, td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #111827; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #9ca3af; }
+    tbody tr:hover { background: #020617; }
+    #status { font-size: 0.875rem; color: #9ca3af; margin-top: 0.75rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>dom4in.net</h1>
+    <div class="subtitle">High-level stats on short and meaningful domains — like a market dashboard, without giving away the list.</div>
+  </header>
+
+  <section>
+    <div class="kpi-grid">
+      <div class="card">
+        <div class="card-label">Domains Tracked (Lifetime)</div>
+        <div class="card-value" id="kpi-lifetime">–</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Domains Processed (Last 24h)</div>
+        <div class="card-value" id="kpi-24h">–</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>1–6 Letter Domains Overview</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Length</th>
+          <th>Total Possible</th>
+          <th>Tracked</th>
+          <th>Unregistered Found</th>
+          <th>Unused / No Website</th>
+        </tr>
+      </thead>
+      <tbody id="length-table-body">
+        <!-- Filled by JS -->
+      </tbody>
+    </table>
+    <div id="status">Loading stats…</div>
+  </section>
+
+  <script>
+    async function loadOverview() {
+      const statusEl = document.getElementById('status');
+      try {
+        statusEl.textContent = 'Loading stats…';
+        const res = await fetch('/api/stats/overview');
+        if (!res.ok) {
+          throw new Error('HTTP ' + res.status);
+        }
+        const data = await res.json();
+
+        document.getElementById('kpi-lifetime').textContent = data.domains_tracked_lifetime.toLocaleString();
+        document.getElementById('kpi-24h').textContent = data.domains_tracked_24h.toLocaleString();
+
+        const tbody = document.getElementById('length-table-body');
+        tbody.innerHTML = '';
+        (data.letter_length_counts || []).forEach(row => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${row.length}</td>
+            <td>${row.total_possible.toLocaleString()}</td>
+            <td>${row.tracked.toLocaleString()}</td>
+            <td>${row.unregistered_found.toLocaleString()}</td>
+            <td>${row.unused_found.toLocaleString()}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        statusEl.textContent = 'Stats loaded from backend API.';
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = 'Failed to load stats. Backend may not be running yet.';
+      }
+    }
+
+    loadOverview();
+  </script>
+</body>
+</html>

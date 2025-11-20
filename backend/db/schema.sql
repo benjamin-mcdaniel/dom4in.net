@@ -1,0 +1,26 @@
+-- D1 schema for dom4in.net aggregated stats
+
+CREATE TABLE IF NOT EXISTS global_stats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL, -- ISO date (e.g. 2025-11-20) or 'overall'
+  domains_tracked_lifetime INTEGER NOT NULL DEFAULT 0,
+  domains_tracked_24h INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS length_stats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snap_date TEXT NOT NULL,
+  tld TEXT NOT NULL, -- 'ALL' or a specific TLD like 'com'
+  length INTEGER NOT NULL, -- 1-6
+  total_possible INTEGER NOT NULL,
+  tracked_count INTEGER NOT NULL DEFAULT 0,
+  unregistered_found INTEGER NOT NULL DEFAULT 0,
+  unused_found INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_length_stats_snap_tld_len
+  ON length_stats (snap_date, tld, length);
