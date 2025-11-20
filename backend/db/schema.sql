@@ -30,3 +30,19 @@ CREATE INDEX IF NOT EXISTS idx_length_stats_snap_tld_len
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_length_stats_unique
   ON length_stats (snap_date, tld, length);
+
+CREATE TABLE IF NOT EXISTS tld_stats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snap_date TEXT NOT NULL,
+  tld TEXT NOT NULL,
+  domains_checked_total INTEGER NOT NULL DEFAULT 0,
+  short_domains_checked_total INTEGER NOT NULL DEFAULT 0,
+  short_unregistered_count INTEGER NOT NULL DEFAULT 0,
+  short_no_website_count INTEGER NOT NULL DEFAULT 0,
+  short_active_site_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tld_stats_unique
+  ON tld_stats (snap_date, tld);
