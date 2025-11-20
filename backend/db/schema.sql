@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS global_stats (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_global_stats_date
+  ON global_stats (date);
+
 CREATE TABLE IF NOT EXISTS length_stats (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   snap_date TEXT NOT NULL,
@@ -23,4 +26,7 @@ CREATE TABLE IF NOT EXISTS length_stats (
 );
 
 CREATE INDEX IF NOT EXISTS idx_length_stats_snap_tld_len
+  ON length_stats (snap_date, tld, length);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_length_stats_unique
   ON length_stats (snap_date, tld, length);
