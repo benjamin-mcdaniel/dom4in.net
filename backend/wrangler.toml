@@ -13,3 +13,4 @@ ADMIN_API_KEY = "changeme-admin-key"
 
 [observability]
 enabled = true
+
