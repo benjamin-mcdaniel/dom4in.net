@@ -129,6 +129,31 @@ export default {
       }
     }
 
+    if (url.pathname === "/api/admin/reset-stats" && request.method === "POST") {
+      const apiKey = request.headers.get("x-admin-api-key") || request.headers.get("X-Admin-Api-Key");
+      if (!apiKey || apiKey !== env.ADMIN_API_KEY) {
+        return new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      try {
+        await env.DB.prepare("DELETE FROM global_stats").run();
+        await env.DB.prepare("DELETE FROM length_stats").run();
+        await env.DB.prepare("DELETE FROM tld_stats").run();
+
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        return new Response(
+          JSON.stringify({ error: "failed_to_reset_stats", message: String(err) }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+
     return new Response("Not found", { status: 404 });
   },
 };

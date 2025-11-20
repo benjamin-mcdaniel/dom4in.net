@@ -322,6 +322,30 @@ def upload_aggregate(api_base: str, api_key: str, payload: Dict, dry_run: bool =
         print(f"[upload_aggregate] URL error: {e}")
 
 
+def reset_db(api_base: str, api_key: str) -> None:
+    """Call the admin reset endpoint to clear aggregated stats in D1."""
+    url = f"{api_base.rstrip('/')}/api/admin/reset-stats"
+    req = urllib.request.Request(
+        url,
+        data=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "x-admin-api-key": api_key,
+            "User-Agent": "dom4in-collector/1.0",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read()
+            print(f"[reset_db] Status {resp.status}: {body.decode('utf-8', errors='ignore')}")
+    except urllib.error.HTTPError as e:
+        print(f"[reset_db] HTTP error {e.code}: {e.read().decode('utf-8', errors='ignore')}")
+    except urllib.error.URLError as e:
+        print(f"[reset_db] URL error: {e}")
+
+
 def reset_pointer() -> None:
     if os.path.exists(POINTER_FILE):
         os.remove(POINTER_FILE)
@@ -431,12 +455,9 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Do not POST to backend, just print payload")
     parser.add_argument("--print-each", action="store_true", help="Print each domain and its classification as it is processed")
     parser.add_argument("--reset-pointer", action="store_true", help="Reset pointer to the beginning and exit")
+    parser.add_argument("--reset-db", action="store_true", help="Reset aggregated stats in the backend database and exit")
 
     args = parser.parse_args()
-
-    if args.reset_pointer:
-        reset_pointer()
-        return
 
     # Load defaults from local config file if present
     config = {}
@@ -449,6 +470,20 @@ def main() -> None:
 
     api_base = args.api_base or config.get("api_base", "https://dom4in.net")
     api_key = args.api_key or config.get("admin_api_key", "")
+
+    if args.reset_db:
+        if not api_key:
+            print("Error: admin API key is required to reset DB.")
+            return
+        reset_db(api_base, api_key)
+        # Optionally also reset pointer in the same 1-liner
+        if args.reset_pointer:
+            reset_pointer()
+        return
+
+    if args.reset_pointer:
+        reset_pointer()
+        return
 
     if not api_key:
         print("Error: admin API key is required. Set it in collector/config.local.json or pass --api-key.")
