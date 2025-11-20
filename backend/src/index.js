@@ -12,7 +12,7 @@ export default {
     if (url.pathname === "/api/stats/overview") {
       try {
         const latestGlobal = await env.DB.prepare(
-          "SELECT date, domains_tracked_lifetime, domains_tracked_24h FROM global_stats ORDER BY date DESC LIMIT 1"
+          "SELECT date, domains_tracked_lifetime, domains_tracked_24h, updated_at FROM global_stats ORDER BY date DESC LIMIT 1"
         ).first();
 
         if (!latestGlobal) {
@@ -26,7 +26,7 @@ export default {
           });
         }
 
-        const { date, domains_tracked_lifetime, domains_tracked_24h } = latestGlobal;
+        const { date, domains_tracked_lifetime, domains_tracked_24h, updated_at } = latestGlobal;
 
         const lengthRows = await env.DB.prepare(
           "SELECT length, total_possible, tracked_count, unregistered_found, unused_found FROM length_stats WHERE snap_date = ? AND tld = ? ORDER BY length ASC"
@@ -45,6 +45,7 @@ export default {
         const payload = {
           domains_tracked_lifetime,
           domains_tracked_24h,
+          last_updated_at: updated_at,
           letter_length_counts,
         };
 

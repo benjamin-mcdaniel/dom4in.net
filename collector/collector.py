@@ -1,12 +1,19 @@
 import argparse
 import json
 import os
+import socket
+import ssl
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
 
-POINTER_FILE = os.path.join(os.path.dirname(__file__), "state_pointer.json")
+BASE_DIR = os.path.dirname(__file__)
+POINTER_FILE = os.path.join(BASE_DIR, "state_pointer.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "config.local.json")
 
 
 CHARSET = "abcdefghijklmnopqrstuvwxyz"
@@ -90,26 +97,72 @@ def generate_batch(pointer: Pointer) -> List[Tuple[str, str]]:
 
 
 def check_domain_dns(domain: str) -> Dict:
-    """Stub for DNS/registration check.
+    """Best-effort DNS/registration check using socket.getaddrinfo.
 
-    Returns a dict with booleans/labels, to be implemented with real DNS + WHOIS later.
+    This is intentionally simple and uses only the Python standard library.
     """
-    # TODO: implement DNS + optional WHOIS
-    return {
-        "registered": False,
-        "has_dns": False,
-    }
+    try:
+        # getaddrinfo will raise for NXDOMAIN / no records
+        socket.getaddrinfo(domain, None)
+        return {
+            "registered": True,
+            "has_dns": True,
+        }
+    except OSError:
+        return {
+            "registered": False,
+            "has_dns": False,
+        }
 
 
 def check_domain_http(domain: str) -> Dict:
-    """Stub for HTTP/product check.
+    """Simple HTTP/product check using urllib.
 
     Only called for domains that appear registered.
     """
-    # TODO: implement HTTP probing and classification
+    url = f"https://{domain}"
+    req = urllib.request.Request(url, headers={"User-Agent": "dom4in-collector/1.0"})
+
+    try:
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
+            status = resp.getcode() or 0
+            content_type = resp.headers.get("Content-Type", "")
+            body = resp.read(4096)  # read up to 4KB
+    except (urllib.error.URLError, socket.timeout, ssl.SSLError):
+        return {
+            "usage_state": "no_website",
+            "product_state": "unknown",
+        }
+
+    text_snippet = ""
+    if isinstance(body, bytes):
+        try:
+            text_snippet = body.decode("utf-8", errors="ignore")
+        except Exception:
+            text_snippet = ""
+
+    text_lower = text_snippet.lower()
+
+    # Basic usage classification
+    if status >= 500:
+        usage_state = "no_website"
+    elif any(keyword in text_lower for keyword in ["domain parking", "parked domain", "this domain is for sale"]):
+        usage_state = "parked_or_placeholder"
+    elif status in (301, 302, 303, 307, 308):
+        usage_state = "parked_or_placeholder"
+    elif "text/html" in content_type and len(text_snippet.strip()) > 0:
+        usage_state = "active_site"
+    else:
+        usage_state = "no_website"
+
+    # Very rough product detection
+    product_keywords = ["pricing", "plans", "subscribe", "sign up", "buy now", "api docs", "api documentation"]
+    product_state = "active_product" if any(k in text_lower for k in product_keywords) else "unknown"
+
     return {
-        "usage_state": "no_website",  # no_website | parked_or_placeholder | active_site
-        "product_state": "unknown",   # active_product | unknown
+        "usage_state": usage_state,
+        "product_state": product_state,
     }
 
 
@@ -187,59 +240,119 @@ def build_payload(date_str: str, aggr: Dict) -> Dict:
 # --- Upload stub ---
 
 
-def upload_aggregate(api_base: str, api_key: str, payload: Dict) -> None:
-    """Stub for calling the Worker admin endpoint.
+def upload_aggregate(api_base: str, api_key: str, payload: Dict, dry_run: bool = False) -> None:
+    """Call the Worker admin endpoint (or just print in dry-run mode)."""
+    url = f"{api_base.rstrip('/')}/api/admin/upload-aggregate"
 
-    Implement this later with `requests` or `httpx`.
-    """
-    # Example target: f"{api_base.rstrip('/')}/api/admin/upload-aggregate"
-    # Use header: {"x-admin-api-key": api_key}
-    # TODO: implement
-    print("[upload_aggregate] Would upload:")
-    print(json.dumps(payload, indent=2))
-
-
-def run(batch_size: int, api_base: str, api_key: str) -> None:
-    pointer = Pointer.load()
-    if batch_size:
-        pointer.batch_size = batch_size
-
-    batch = generate_batch(pointer)
-    if not batch:
-        print("No more domains to process within current configuration.")
+    if dry_run:
+        print(f"[dry-run] Would POST to {url} with payload:")
+        print(json.dumps(payload, indent=2))
         return
 
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "x-admin-api-key": api_key,
+            "User-Agent": "dom4in-collector/1.0",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read()
+            print(f"[upload_aggregate] Status {resp.status}: {body.decode('utf-8', errors='ignore')}")
+    except urllib.error.HTTPError as e:
+        print(f"[upload_aggregate] HTTP error {e.code}: {e.read().decode('utf-8', errors='ignore')}")
+    except urllib.error.URLError as e:
+        print(f"[upload_aggregate] URL error: {e}")
+
+
+def reset_pointer() -> None:
+    if os.path.exists(POINTER_FILE):
+        os.remove(POINTER_FILE)
+        print(f"Pointer file removed: {POINTER_FILE}")
+    else:
+        print("Pointer file does not exist; nothing to reset.")
+
+
+def run(count: int, api_base: str, api_key: str, dry_run: bool = False) -> None:
+    if count <= 0:
+        print("Nothing to do: count must be > 0")
+        return
+
+    pointer = Pointer.load()
+
+    remaining = count
     aggr = init_aggregates()
 
-    for domain, tld in batch:
-        label = domain.split(".")[0]
-        length = len(label)
+    while remaining > 0:
+        # Use a reasonable internal batch size to avoid huge DNS/HTTP bursts
+        pointer.batch_size = min(remaining, pointer.batch_size or 25)
+        batch = generate_batch(pointer)
+        if not batch:
+            print("No more domains to process within current configuration.")
+            break
 
-        dns_info = check_domain_dns(domain)
-        http_info = {"usage_state": "no_website", "product_state": "unknown"}
-        if dns_info.get("registered"):
-            http_info = check_domain_http(domain)
+        for domain, tld in batch:
+            if remaining <= 0:
+                break
 
-        update_aggregates(aggr, domain, tld, length, dns_info, http_info)
+            label = domain.split(".")[0]
+            length = len(label)
+
+            dns_info = check_domain_dns(domain)
+            http_info = {"usage_state": "no_website", "product_state": "unknown"}
+            if dns_info.get("registered"):
+                http_info = check_domain_http(domain)
+
+            update_aggregates(aggr, domain, tld, length, dns_info, http_info)
+            remaining -= 1
 
     # Build payload for "today"
     date_str = datetime.now(timezone.utc).date().isoformat()
     payload = build_payload(date_str, aggr)
 
-    upload_aggregate(api_base, api_key, payload)
+    upload_aggregate(api_base, api_key, payload, dry_run=dry_run)
 
-    # If upload succeeds (once implemented), save pointer
+    # If upload succeeds (or we are in dry-run), save pointer so progress is kept
     pointer.save()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="dom4in.net collector")
-    parser.add_argument("--batch-size", type=int, default=25, help="Number of domains to process per run")
-    parser.add_argument("--api-base", type=str, default="https://dom4in.net", help="Base URL for the backend API")
-    parser.add_argument("--api-key", type=str, default="changeme-admin-key", help="Admin API key for upload")
+    parser.add_argument("--count", type=int, default=25, help="Number of domains to process in this run")
+    parser.add_argument("--api-base", type=str, default=None, help="Base URL for the backend API (overrides config file)")
+    parser.add_argument("--api-key", type=str, default=None, help="Admin API key for upload (overrides config file)")
+    parser.add_argument("--dry-run", action="store_true", help="Do not POST to backend, just print payload")
+    parser.add_argument("--reset-pointer", action="store_true", help="Reset pointer to the beginning and exit")
 
     args = parser.parse_args()
-    run(args.batch_size, args.api_base, args.api_key)
+
+    if args.reset_pointer:
+        reset_pointer()
+        return
+
+    # Load defaults from local config file if present
+    config = {}
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception as e:
+            print(f"Warning: failed to read config from {CONFIG_FILE}: {e}")
+
+    api_base = args.api_base or config.get("api_base", "https://dom4in.net")
+    api_key = args.api_key or config.get("admin_api_key", "")
+
+    if not api_key:
+        print("Error: admin API key is required. Set it in collector/config.local.json or pass --api-key.")
+        return
+
+    run(args.count, api_base, api_key, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

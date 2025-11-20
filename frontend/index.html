@@ -19,6 +19,7 @@
     th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #9ca3af; }
     tbody tr:hover { background: #020617; }
     #status { font-size: 0.875rem; color: #9ca3af; margin-top: 0.75rem; }
+    #last-updated { font-size: 0.8rem; color: #6b7280; margin-top: 0.5rem; }
   </style>
 </head>
 <body>
@@ -57,6 +58,7 @@
       </tbody>
     </table>
     <div id="status">Loading stats…</div>
+    <div id="last-updated"></div>
   </section>
 
   <script>
@@ -72,6 +74,18 @@
 
         document.getElementById('kpi-lifetime').textContent = data.domains_tracked_lifetime.toLocaleString();
         document.getElementById('kpi-24h').textContent = data.domains_tracked_24h.toLocaleString();
+
+        const lastUpdatedEl = document.getElementById('last-updated');
+        if (data.last_updated_at) {
+          const d = new Date(data.last_updated_at);
+          if (!isNaN(d.getTime())) {
+            lastUpdatedEl.textContent = 'Last updated: ' + d.toLocaleString();
+          } else {
+            lastUpdatedEl.textContent = '';
+          }
+        } else {
+          lastUpdatedEl.textContent = '';
+        }
 
         const tbody = document.getElementById('length-table-body');
         tbody.innerHTML = '';

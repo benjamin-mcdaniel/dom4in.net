@@ -1,0 +1,8 @@
+# Local collector state (restart pointer)
+collector/state_pointer.json
+
+# Local collector config (API keys, etc.)
+collector/config.local.json
+
+# Local backend config (API keys, etc.)
+backend/.dev.vars
