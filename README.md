@@ -106,7 +106,9 @@ Defined in `backend/db/schema.sql`:
   - `tld` (TEXT, `'ALL'` for aggregates across TLDs)
   - `length` (INTEGER, 1–6)
   - `total_possible` (INTEGER, e.g. `26^length` for labels a–z)
-  - `tracked_count`, `unregistered_found`, `unused_found`
+  - `tracked_count` – number of domain searches (label×TLD checks) in this length bucket
+  - `unregistered_found` – currently surfaced in the UI as **"Parking Detected"**
+  - `unused_found` – surfaced as **"Unused / No Website"**
   - Unique index on `(snap_date, tld, length)`
 
 - `tld_stats`

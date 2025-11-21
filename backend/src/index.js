@@ -31,7 +31,7 @@ export default {
         const lengthRows = await env.DB.prepare(
           "SELECT length, total_possible, tracked_count, unregistered_found, unused_found FROM length_stats WHERE snap_date = ? AND tld = ? ORDER BY length ASC"
         )
-          .bind(date, "ALL")
+          .bind("overall", "ALL")
           .all();
 
         const letter_length_counts = (lengthRows.results || []).map((row) => ({
@@ -88,6 +88,7 @@ export default {
       }
 
       try {
+        // Global stats: cumulative per day
         await env.DB.prepare(
           "INSERT INTO global_stats (date, domains_tracked_lifetime, domains_tracked_24h) VALUES (?, ?, ?) " +
             "ON CONFLICT(date) DO UPDATE SET " +
@@ -98,19 +99,20 @@ export default {
           .bind(date, global.domains_tracked_lifetime || 0, global.domains_tracked_24h || 0)
           .run();
 
-        await env.DB.prepare(
-          "DELETE FROM length_stats WHERE snap_date = ? AND tld = ?"
-        )
-          .bind(date, "ALL")
-          .run();
-
+        // Length stats: cumulative lifetime, aggregated under snap_date = 'overall'
         for (const row of length_stats) {
           await env.DB.prepare(
             "INSERT INTO length_stats (snap_date, tld, length, total_possible, tracked_count, unregistered_found, unused_found) " +
-              "VALUES (?, ?, ?, ?, ?, ?, ?)"
+              "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+              "ON CONFLICT(snap_date, tld, length) DO UPDATE SET " +
+              "total_possible = excluded.total_possible, " +
+              "tracked_count = length_stats.tracked_count + excluded.tracked_count, " +
+              "unregistered_found = length_stats.unregistered_found + excluded.unregistered_found, " +
+              "unused_found = length_stats.unused_found + excluded.unused_found, " +
+              "updated_at = datetime('now')"
           )
             .bind(
-              date,
+              "overall",
               row.tld || "ALL",
               row.length,
               row.total_possible,
