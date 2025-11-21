@@ -59,6 +59,7 @@
       </table>
       <div id="status">Loading stats…</div>
       <div id="last-updated"></div>
+      <div id="derived-summary"></div>
     </section>
 
     <aside class="layout-side">
@@ -82,9 +83,12 @@
           dom4in.net samples the short-domain space and reports high-level aggregates only. Currently focused on letter-based labels up to 6 characters and combine results across several major TLDs, so counts represent label coverage rather than a list of specific domains.
         </p>
         <p style="margin-top: 0.75rem; font-size: 0.8rem; color: #9ca3af;">
-          <strong>Possible Labels</strong> is the size of the short-name space at that length – how many letter strings exist (a–z) before the dot. For example, length&nbsp;2 has 26² = 676 labels (aa, ab, …).
+          <strong>Possible Labels</strong> is the size of the short-name space at that length – how many letter strings exist (a–z) before the dot. For example, length 2 has 26² = 676 labels (aa, ab, …).
           <strong>Tracked</strong> counts how many <em>domain searches</em> we have actually run so far, across a fixed set of TLDs
           (<span id="tld-list">com, net, org, io, co</span>). Each label can be checked on several TLDs, so Tracked can be larger than Possible Labels, because it is counting <code>labels × TLDs</code>, not unique labels.
+        </p>
+        <p style="margin-top: 0.5rem; font-size: 0.8rem; color: #9ca3af;">
+          Below, we also summarize what fraction of the checked short domains appear unregistered (no DNS) or registered but unused/parked. These percentages are computed from the same aggregates and never expose individual domains.
         </p>
       </section>
     </aside>
@@ -118,7 +122,13 @@
 
         const tbody = document.getElementById('length-table-body');
         tbody.innerHTML = '';
-        (data.letter_length_counts || []).forEach(row => {
+        const lengthRows = data.letter_length_counts || [];
+        let sumPossible = 0;
+        let sumTracked = 0;
+        let sumUnregistered = 0;
+        let sumUnused = 0;
+
+        lengthRows.forEach(row => {
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td>${row.length}</td>
@@ -128,7 +138,28 @@
             <td>${row.unused_found.toLocaleString()}</td>
           `;
           tbody.appendChild(tr);
+
+          sumPossible += row.total_possible || 0;
+          sumTracked += row.tracked || 0;
+          sumUnregistered += row.unregistered_found || 0;
+          sumUnused += row.unused_found || 0;
         });
+
+        const summaryEl = document.getElementById('derived-summary');
+        if (lengthRows.length && sumTracked > 0) {
+          const coveragePct = sumPossible > 0 ? (sumTracked / sumPossible) * 100 : 0;
+          const unregPct = (sumUnregistered / sumTracked) * 100;
+          const unusedPct = (sumUnused / sumTracked) * 100;
+          summaryEl.innerHTML = `
+            Overall, we have run <strong>${sumTracked.toLocaleString()}</strong> short-domain searches across
+            all tracked lengths. This covers about <strong>${coveragePct.toFixed(2)}%</strong> of the
+            theoretical short-label space in this view. Of the domains checked, roughly
+            <strong>${unregPct.toFixed(1)}%</strong> appeared unregistered (no DNS) and
+            <strong>${unusedPct.toFixed(1)}%</strong> were registered but unused/parked.
+          `;
+        } else {
+          summaryEl.textContent = '';
+        }
 
         statusEl.textContent = 'Stats loaded from backend API.';
       } catch (err) {
