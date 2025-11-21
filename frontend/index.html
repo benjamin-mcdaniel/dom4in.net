@@ -6,11 +6,11 @@
   <title>dom4in.net – Domain Market Stats</title>
   <style>
     body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; background: #050816; color: #f9fafb; }
-    h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
     h2 { margin-top: 2rem; margin-bottom: 0.5rem; }
-    .subtitle { color: #9ca3af; margin-bottom: 1.5rem; }
-    nav { display: flex; gap: 1.5rem; align-items: center; margin-bottom: 1.5rem; }
-    nav a { font-size: 0.9rem; color: #9ca3af; text-decoration: none; }
+    .subtitle { color: #9ca3af; margin-bottom: 1rem; max-width: 40rem; }
+    nav { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.75rem; }
+    nav a { font-size: 0.85rem; color: #9ca3af; text-decoration: none; }
     nav a:hover { color: #e5e7eb; }
     .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
     .card { background: #020617; border-radius: 0.75rem; padding: 1rem 1.25rem; border: 1px solid #111827; }
@@ -50,7 +50,7 @@
   </section>
 
   <section id="short-domains">
-    <h2>1–6 Character Labels Overview</h2>
+    <h2>1–6 Character Short Domains Overview</h2>
     <table>
       <thead>
         <tr>
@@ -68,8 +68,9 @@
     <div id="status">Loading stats…</div>
     <div id="last-updated"></div>
     <p style="margin-top: 0.75rem; font-size: 0.8rem; color: #6b7280; max-width: 40rem;">
-      "Possible labels" counts how many short strings of letters exist for each length using the current character set (a–z). dom4in.net currently samples those labels across a fixed set of TLDs
-      (<span id="tld-list">com, net, org, io, co</span>), so the rough space of domains is <code>labels × TLDs</code>. "Domain Searches" are the number of label×TLD combinations we have actively checked so far.
+      <strong>Possible Labels</strong> is the size of the short-name space at that length – how many letter strings exist (a–z) before the dot. For example, length&nbsp;2 has 26² = 676 labels (aa, ab, …).
+      <strong>Tracked</strong> counts how many <em>domain searches</em> we have actually run so far, across a fixed set of TLDs
+      (<span id="tld-list">com, net, org, io, co</span>). Each label can be checked on several TLDs, so Tracked can be larger than Possible Labels, because it is counting <code>labels × TLDs</code>, not unique labels.
     </p>
   </section>
 
