@@ -84,6 +84,10 @@ Endpoints:
     ```
 
   - Upserts into `global_stats` and replaces `length_stats` rows for that date + `tld = 'ALL'`.
+  - **Aggregation semantics:**
+    - `global_stats.domains_tracked_lifetime` – cumulative sum of all `domains_tracked_lifetime` values sent for each date. This is effectively total domain searches lifetime since the last DB reset.
+    - `global_stats.domains_tracked_24h` – cumulative sum per date (per day). Each run on a given date adds to that day's total.
+    - `length_stats` – cumulative lifetime aggregates under `snap_date = 'overall'` and `tld = 'ALL'`. New uploads add their counts to existing rows per `(snap_date, tld, length)` rather than overwriting them.
 
 - `POST /api/admin/reset-stats`
   - **Internal** admin endpoint to clear aggregates.
@@ -158,6 +162,36 @@ Config (gitignored): `collector/config.local.json`:
 Pointer file (gitignored):
 
 - `collector/state_pointer.json` – remembers where the collector last stopped in the label/TLD space.
+
+---
+
+## 3. Configuration & settings
+
+### 3.1 Collector config (local-only)
+
+`collector/config.local.json` (gitignored) controls how the collector talks to the backend and DNS:
+
+- `api_base` – Base URL for the backend API, e.g. `https://dom4in.net`.
+- `admin_api_key` – Shared secret used as the `x-admin-api-key` header. Must match `ADMIN_API_KEY` configured for the Worker.
+- `dns_resolvers` – Optional list of DNS-over-HTTPS resolvers. Each entry:
+
+  ```json
+  { "name": "cloudflare", "url": "https://cloudflare-dns.com/dns-query" }
+  ```
+
+  If omitted, defaults to Cloudflare and Google DoH endpoints. The collector rotates resolvers every 25 queries and falls back on error.
+
+- `per_request_delay_ms` – Optional integer (milliseconds). If >0, the collector sleeps this long after each domain to avoid hammering remote endpoints.
+
+### 3.2 Backend local config
+
+`backend/.dev.vars` (gitignored) is used only for local `wrangler dev`:
+
+```bash
+ADMIN_API_KEY=your-admin-key-here
+```
+
+In production, the same `ADMIN_API_KEY` value must be set as an environment variable/secret on the `dom4in-backend` Worker in the Cloudflare dashboard. The Worker never reads secrets from `wrangler.toml` in production; only from its environment.
 
 ### Collector CLI
 

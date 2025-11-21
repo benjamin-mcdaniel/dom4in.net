@@ -30,6 +30,14 @@ DEFAULT_DNS_RESOLVERS = [
         "name": "google",
         "url": "https://dns.google/resolve",
     },
+    {
+        "name": "quad9",
+        "url": "https://dns.quad9.net/dns-query",
+    },
+    {
+        "name": "opendns",
+        "url": "https://doh.opendns.com/dns-query",
+    },
 ]
 
 
