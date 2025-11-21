@@ -39,11 +39,11 @@
   <section id="overview">
     <div class="kpi-grid">
       <div class="card">
-        <div class="card-label">Domains Tracked (Lifetime)</div>
+        <div class="card-label">Domain Searches (Lifetime)</div>
         <div class="card-value" id="kpi-lifetime">–</div>
       </div>
       <div class="card">
-        <div class="card-label">Domains Processed (Last 24h)</div>
+        <div class="card-label">Domain Searches (Last 24h)</div>
         <div class="card-value" id="kpi-24h">–</div>
       </div>
     </div>
@@ -68,7 +68,8 @@
     <div id="status">Loading stats…</div>
     <div id="last-updated"></div>
     <p style="margin-top: 0.75rem; font-size: 0.8rem; color: #6b7280; max-width: 40rem;">
-      "Possible labels" counts how many short strings of letters exist for each length using the current character set (a–z). Actual domain names include those labels across multiple TLDs; we aggregate across TLDs here rather than showing each extension separately.
+      "Possible labels" counts how many short strings of letters exist for each length using the current character set (a–z). dom4in.net currently samples those labels across a fixed set of TLDs
+      (<span id="tld-list">com, net, org, io, co</span>), so the rough space of domains is <code>labels × TLDs</code>. "Domain Searches" are the number of label×TLD combinations we have actively checked so far.
     </p>
   </section>
 

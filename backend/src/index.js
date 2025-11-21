@@ -90,7 +90,10 @@ export default {
       try {
         await env.DB.prepare(
           "INSERT INTO global_stats (date, domains_tracked_lifetime, domains_tracked_24h) VALUES (?, ?, ?) " +
-            "ON CONFLICT(date) DO UPDATE SET domains_tracked_lifetime = excluded.domains_tracked_lifetime, domains_tracked_24h = excluded.domains_tracked_24h, updated_at = datetime('now')"
+            "ON CONFLICT(date) DO UPDATE SET " +
+            "domains_tracked_lifetime = global_stats.domains_tracked_lifetime + excluded.domains_tracked_lifetime, " +
+            "domains_tracked_24h = global_stats.domains_tracked_24h + excluded.domains_tracked_24h, " +
+            "updated_at = datetime('now')"
         )
           .bind(date, global.domains_tracked_lifetime || 0, global.domains_tracked_24h || 0)
           .run();
