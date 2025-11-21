@@ -12,7 +12,10 @@
     nav { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.75rem; }
     nav a { font-size: 0.85rem; color: #9ca3af; text-decoration: none; }
     nav a:hover { color: #e5e7eb; }
-    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .layout { display: flex; gap: 2rem; align-items: flex-start; margin-top: 1.5rem; }
+    .layout-main { flex: 0 0 68%; min-width: 0; }
+    .layout-side { flex: 1; min-width: 0; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
     .card { background: #020617; border-radius: 0.75rem; padding: 1rem 1.25rem; border: 1px solid #111827; }
     .card-label { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: #9ca3af; margin-bottom: 0.25rem; }
     .card-value { font-size: 1.25rem; font-weight: 600; }
@@ -23,6 +26,10 @@
     tbody tr:hover { background: #020617; }
     #status { font-size: 0.875rem; color: #9ca3af; margin-top: 0.75rem; }
     #last-updated { font-size: 0.8rem; color: #6b7280; margin-top: 0.5rem; }
+    @media (max-width: 900px) {
+      .layout { flex-direction: column; }
+      .layout-main, .layout-side { flex: 1 1 auto; }
+    }
   </style>
 </head>
 <body>
@@ -33,53 +40,57 @@
       <a href="#short-domains">Short domains</a>
       <a href="#about">About</a>
     </nav>
-    <div class="subtitle">High-level stats on short and meaningful domains — like a market dashboard, without giving away the list.</div>
+    <div class="subtitle">High-level stats on short and meaningful domains</div>
   </header>
+  <main class="layout">
+    <section id="short-domains" class="layout-main">
+      <h2>1–6 Character Short Domains Overview</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Length</th>
+            <th>Possible Labels (a–z)</th>
+            <th>Tracked</th>
+            <th>Parking Detected</th>
+            <th>Unused / No Website</th>
+          </tr>
+        </thead>
+        <tbody id="length-table-body">
+          <!-- Filled by JS -->
+        </tbody>
+      </table>
+      <div id="status">Loading stats…</div>
+      <div id="last-updated"></div>
+    </section>
 
-  <section id="overview">
-    <div class="kpi-grid">
-      <div class="card">
-        <div class="card-label">Domain Searches (Lifetime)</div>
-        <div class="card-value" id="kpi-lifetime">–</div>
-      </div>
-      <div class="card">
-        <div class="card-label">Domain Searches (Last 24h)</div>
-        <div class="card-value" id="kpi-24h">–</div>
-      </div>
-    </div>
-  </section>
+    <aside class="layout-side">
+      <section id="overview">
+        <h2>Domain Searches</h2>
+        <div class="kpi-grid">
+          <div class="card">
+            <div class="card-label">Lifetime</div>
+            <div class="card-value" id="kpi-lifetime">–</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Last 24h</div>
+            <div class="card-value" id="kpi-24h">–</div>
+          </div>
+        </div>
+      </section>
 
-  <section id="short-domains">
-    <h2>1–6 Character Short Domains Overview</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Length</th>
-          <th>Possible Labels (a–z)</th>
-          <th>Tracked</th>
-          <th>Parking Detected</th>
-          <th>Unused / No Website</th>
-        </tr>
-      </thead>
-      <tbody id="length-table-body">
-        <!-- Filled by JS -->
-      </tbody>
-    </table>
-    <div id="status">Loading stats…</div>
-    <div id="last-updated"></div>
-    <p style="margin-top: 0.75rem; font-size: 0.8rem; color: #6b7280; max-width: 40rem;">
-      <strong>Possible Labels</strong> is the size of the short-name space at that length – how many letter strings exist (a–z) before the dot. For example, length&nbsp;2 has 26² = 676 labels (aa, ab, …).
-      <strong>Tracked</strong> counts how many <em>domain searches</em> we have actually run so far, across a fixed set of TLDs
-      (<span id="tld-list">com, net, org, io, co</span>). Each label can be checked on several TLDs, so Tracked can be larger than Possible Labels, because it is counting <code>labels × TLDs</code>, not unique labels.
-    </p>
-  </section>
-
-  <section id="about" style="margin-top: 2.5rem; max-width: 42rem; font-size: 0.9rem; color: #d1d5db;">
-    <h2>About this data</h2>
-    <p>
-      dom4in.net samples the short-domain space and reports high-level aggregates only. We currently focus on letter-based labels up to 6 characters and combine results across several major TLDs, so counts represent label coverage rather than a list of specific domains.
-    </p>
-  </section>
+      <section id="about" style="margin-top: 1.5rem; font-size: 0.9rem; color: #d1d5db;">
+        <h2>About this data</h2>
+        <p>
+          dom4in.net samples the short-domain space and reports high-level aggregates only. We currently focus on letter-based labels up to 6 characters and combine results across several major TLDs, so counts represent label coverage rather than a list of specific domains.
+        </p>
+        <p style="margin-top: 0.75rem; font-size: 0.8rem; color: #9ca3af;">
+          <strong>Possible Labels</strong> is the size of the short-name space at that length – how many letter strings exist (a–z) before the dot. For example, length&nbsp;2 has 26² = 676 labels (aa, ab, …).
+          <strong>Tracked</strong> counts how many <em>domain searches</em> we have actually run so far, across a fixed set of TLDs
+          (<span id="tld-list">com, net, org, io, co</span>). Each label can be checked on several TLDs, so Tracked can be larger than Possible Labels, because it is counting <code>labels × TLDs</code>, not unique labels.
+        </p>
+      </section>
+    </aside>
+  </main>
 
   <script>
     async function loadOverview() {
