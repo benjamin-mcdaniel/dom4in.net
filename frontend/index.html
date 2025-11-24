@@ -123,7 +123,6 @@
         const tbody = document.getElementById('length-table-body');
         tbody.innerHTML = '';
         const lengthRows = data.letter_length_counts || [];
-        let sumPossible = 0;
         let sumTracked = 0;
         let sumUnregistered = 0;
         let sumUnused = 0;
@@ -138,8 +137,6 @@
             <td>${row.unused_found.toLocaleString()}</td>
           `;
           tbody.appendChild(tr);
-
-          sumPossible += row.total_possible || 0;
           sumTracked += row.tracked || 0;
           sumUnregistered += row.unregistered_found || 0;
           sumUnused += row.unused_found || 0;
@@ -147,13 +144,11 @@
 
         const summaryEl = document.getElementById('derived-summary');
         if (lengthRows.length && sumTracked > 0) {
-          const coveragePct = sumPossible > 0 ? (sumTracked / sumPossible) * 100 : 0;
           const unregPct = (sumUnregistered / sumTracked) * 100;
           const unusedPct = (sumUnused / sumTracked) * 100;
           summaryEl.innerHTML = `
             Overall, we have run <strong>${sumTracked.toLocaleString()}</strong> short-domain searches across
-            all tracked lengths. This covers about <strong>${coveragePct.toFixed(2)}%</strong> of the
-            theoretical short-label space in this view. Of the domains checked, roughly
+            all tracked lengths. Of the domains checked, roughly
             <strong>${unregPct.toFixed(1)}%</strong> appeared unregistered (no DNS) and
             <strong>${unusedPct.toFixed(1)}%</strong> were registered but unused/parked.
           `;
