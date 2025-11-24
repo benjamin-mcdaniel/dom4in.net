@@ -24,6 +24,16 @@
     th:first-child, td:first-child { text-align: left; }
     th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #9ca3af; }
     tbody tr:hover { background: #020617; }
+    .length-chart-grid { margin-top: 0.5rem; display: grid; gap: 0.5rem; }
+    .length-chart-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: #d1d5db; }
+    .length-chart-label { width: 1.5rem; font-variant-numeric: tabular-nums; }
+    .length-chart-bar { flex: 1; height: 0.6rem; border-radius: 999px; overflow: hidden; display: flex; background: #020617; border: 1px solid #111827; }
+    .length-chart-seg-unreg { background: #f97316; }
+    .length-chart-seg-unused { background: #22c55e; }
+    .length-chart-seg-other { background: #3b82f6; }
+    .length-chart-legend { margin-top: 0.5rem; font-size: 0.75rem; color: #9ca3af; display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    .legend-item { display: inline-flex; align-items: center; gap: 0.25rem; }
+    .legend-swatch { width: 0.7rem; height: 0.7rem; border-radius: 999px; }
     #status { font-size: 0.875rem; color: #9ca3af; margin-top: 0.75rem; }
     #last-updated { font-size: 0.8rem; color: #6b7280; margin-top: 0.5rem; }
     @media (max-width: 900px) {
@@ -43,6 +53,16 @@
   <main class="layout">
     <section id="short-domains" class="layout-main">
       <h2>1–6 Character Short Domains Overview</h2>
+      <div style="font-size: 0.85rem; color: #9ca3af; margin-top: 0.25rem;">
+        For each length, we show how the checked short domains split between unregistered (no DNS),
+        registered but unused/parked, and everything else.
+      </div>
+      <div id="length-charts" class="length-chart-grid"></div>
+      <div class="length-chart-legend">
+        <span class="legend-item"><span class="legend-swatch" style="background:#f97316;"></span>Unregistered (no DNS)</span>
+        <span class="legend-item"><span class="legend-swatch" style="background:#22c55e;"></span>Registered, unused/parked</span>
+        <span class="legend-item"><span class="legend-swatch" style="background:#3b82f6;"></span>Other (likely active or unknown)</span>
+      </div>
       <table>
         <thead>
           <tr>
@@ -121,7 +141,9 @@
         }
 
         const tbody = document.getElementById('length-table-body');
+        const chartsEl = document.getElementById('length-charts');
         tbody.innerHTML = '';
+        chartsEl.innerHTML = '';
         const lengthRows = data.letter_length_counts || [];
         let sumTracked = 0;
         let sumUnregistered = 0;
@@ -140,6 +162,49 @@
           sumTracked += row.tracked || 0;
           sumUnregistered += row.unregistered_found || 0;
           sumUnused += row.unused_found || 0;
+
+          const totalForLength = row.tracked || 0;
+          if (totalForLength > 0) {
+            const unregPctLen = (row.unregistered_found / totalForLength) * 100;
+            const unusedPctLen = (row.unused_found / totalForLength) * 100;
+            const otherPctLen = Math.max(0, 100 - unregPctLen - unusedPctLen);
+
+            const rowEl = document.createElement('div');
+            rowEl.className = 'length-chart-row';
+
+            const labelEl = document.createElement('div');
+            labelEl.className = 'length-chart-label';
+            labelEl.textContent = row.length;
+            rowEl.appendChild(labelEl);
+
+            const barEl = document.createElement('div');
+            barEl.className = 'length-chart-bar';
+
+            const segUnreg = document.createElement('div');
+            segUnreg.className = 'length-chart-seg-unreg';
+            segUnreg.style.width = unregPctLen.toFixed(2) + '%';
+
+            const segUnused = document.createElement('div');
+            segUnused.className = 'length-chart-seg-unused';
+            segUnused.style.width = unusedPctLen.toFixed(2) + '%';
+
+            const segOther = document.createElement('div');
+            segOther.className = 'length-chart-seg-other';
+            segOther.style.width = otherPctLen.toFixed(2) + '%';
+
+            barEl.appendChild(segUnreg);
+            barEl.appendChild(segUnused);
+            barEl.appendChild(segOther);
+            rowEl.appendChild(barEl);
+
+            const pctLabel = document.createElement('div');
+            pctLabel.style.minWidth = '7rem';
+            pctLabel.style.textAlign = 'right';
+            pctLabel.textContent = `${unregPctLen.toFixed(1)}% / ${unusedPctLen.toFixed(1)}%`;
+            rowEl.appendChild(pctLabel);
+
+            chartsEl.appendChild(rowEl);
+          }
         });
 
         const summaryEl = document.getElementById('derived-summary');
