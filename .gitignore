@@ -1,6 +1,10 @@
 # Local collector state (restart pointer)
 collector/state_pointer.json
 
+# Local word-mode collector state and dictionaries
+collector/state_words_pointer.json
+wordlists/words_10_all.txt
+
 # Local collector config (API keys, etc.)
 collector/config.local.json
 

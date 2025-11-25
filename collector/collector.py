@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import random
 import socket
 import ssl
 import time
@@ -14,6 +15,9 @@ from typing import Dict, List, Tuple
 
 BASE_DIR = os.path.dirname(__file__)
 POINTER_FILE = os.path.join(BASE_DIR, "state_pointer.json")
+WORDS_POINTER_FILE = os.path.join(BASE_DIR, "state_words_pointer.json")
+REPO_ROOT = os.path.abspath(os.path.join(BASE_DIR, os.pardir))
+WORDS_FILE = os.path.join(REPO_ROOT, "wordlists", "words_10_all.txt")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.local.json")
 
 
@@ -111,6 +115,65 @@ def generate_batch(pointer: Pointer) -> List[Tuple[str, str]]:
         domain = f"{label}.{tld}"
         batch.append((domain, tld))
 
+    return batch
+
+
+@dataclass
+class WordPointer:
+    version: int = 1
+    index: int = 0  # index into the word list
+
+    def save(self) -> None:
+        with open(WORDS_POINTER_FILE, "w", encoding="utf-8") as f:
+            json.dump(asdict(self), f, indent=2)
+
+    @classmethod
+    def load(cls) -> "WordPointer":
+        if not os.path.exists(WORDS_POINTER_FILE):
+            return cls()
+        with open(WORDS_POINTER_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls(**data)
+
+
+def load_words() -> List[str]:
+    if not os.path.exists(WORDS_FILE):
+        raise RuntimeError(
+            f"Word file {WORDS_FILE} not found. Run `python load_dictionary.py` in the collector folder first."
+        )
+    with open(WORDS_FILE, "r", encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip()]
+
+
+def generate_word_batch(word_pointer: WordPointer, tlds: List[str], count: int) -> List[Tuple[str, str]]:
+    """Generate up to `count` (domain, tld) pairs from the word list and advance the word pointer."""
+    words = load_words()
+    if not words:
+        return []
+
+    batch: List[Tuple[str, str]] = []
+    idx = word_pointer.index
+    total_words = len(words)
+    tld_index = 0
+
+    while len(batch) < count and total_words > 0:
+        if idx >= total_words:
+            # Restart from beginning for now when we reach the end
+            idx = 0
+
+        word = words[idx]
+        idx += 1
+
+        # cycle through TLDs for this word until we hit count
+        for _ in range(len(tlds)):
+            if len(batch) >= count:
+                break
+            tld = tlds[tld_index]
+            tld_index = (tld_index + 1) % len(tlds)
+            domain = f"{word}.{tld}"
+            batch.append((domain, tld))
+
+    word_pointer.index = idx
     return batch
 
 
@@ -299,14 +362,17 @@ def build_payload(date_str: str, aggr: Dict) -> Dict:
 # --- Upload stub ---
 
 
-def upload_aggregate(api_base: str, api_key: str, payload: Dict, dry_run: bool = False) -> None:
-    """Call the Worker admin endpoint (or just print in dry-run mode)."""
+def upload_aggregate(api_base: str, api_key: str, payload: Dict, dry_run: bool = False) -> Tuple[int, str]:
+    """Call the Worker admin endpoint (or just print in dry-run mode).
+
+    Returns a tuple of (status_code, body_text) for logging.
+    """
     url = f"{api_base.rstrip('/')}/api/admin/upload-aggregate"
 
     if dry_run:
         print(f"[dry-run] Would POST to {url} with payload:")
         print(json.dumps(payload, indent=2))
-        return
+        return 0, "dry-run"
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -323,11 +389,16 @@ def upload_aggregate(api_base: str, api_key: str, payload: Dict, dry_run: bool =
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read()
-            print(f"[upload_aggregate] Status {resp.status}: {body.decode('utf-8', errors='ignore')}")
+            text = body.decode("utf-8", errors="ignore")
+            print(f"[upload_aggregate] Status {resp.status}: {text}")
+            return resp.status, text
     except urllib.error.HTTPError as e:
-        print(f"[upload_aggregate] HTTP error {e.code}: {e.read().decode('utf-8', errors='ignore')}")
+        text = e.read().decode("utf-8", errors="ignore")
+        print(f"[upload_aggregate] HTTP error {e.code}: {text}")
+        return e.code, text
     except urllib.error.URLError as e:
         print(f"[upload_aggregate] URL error: {e}")
+        return 0, str(e)
 
 
 def reset_db(api_base: str, api_key: str) -> None:
@@ -362,12 +433,17 @@ def reset_pointer() -> None:
         print("Pointer file does not exist; nothing to reset.")
 
 
-def run(count: int, api_base: str, api_key: str, dry_run: bool = False, print_each: bool = False) -> None:
-    if count <= 0:
-        print("Nothing to do: count must be > 0")
-        return
-
+def run(
+    api_base: str,
+    api_key: str,
+    dry_run: bool = False,
+    print_each: bool = False,
+    use_short: bool = True,
+    use_words: bool = False,
+    block_pause_seconds: int = 0,
+) -> None:
     pointer = Pointer.load()
+    word_pointer = WordPointer.load()
 
     # Load DNS resolvers (from config if available, else defaults)
     config_resolvers = []
@@ -390,21 +466,43 @@ def run(count: int, api_base: str, api_key: str, dry_run: bool = False, print_ea
     resolver_index = 0
     queries_with_current = 0
 
-    remaining = count
-    aggr = init_aggregates()
+    # Default mode: if neither flag is set, behave as "short" mode
+    if not use_short and not use_words:
+        use_short = True
 
-    while remaining > 0:
-        # Use a reasonable internal batch size to avoid huge DNS/HTTP bursts
-        pointer.batch_size = min(remaining, pointer.batch_size or 25)
-        batch = generate_batch(pointer)
+    # Alternate between short and words when both are enabled
+    next_mode = "short" if use_short else "words"
+
+    while True:
+        # Start fresh aggregates for this block
+        aggr = init_aggregates()
+
+        # Pick a random block size between 25 and 80
+        block_count = random.randint(25, 80)
+
+        # Decide which generator to use for this block
+        mode_for_block = next_mode
+        if mode_for_block == "short" and not use_short and use_words:
+            mode_for_block = "words"
+        elif mode_for_block == "words" and not use_words and use_short:
+            mode_for_block = "short"
+
+        if mode_for_block == "short":
+            pointer.batch_size = block_count
+            batch = generate_batch(pointer)
+            # set up tlds for short mode
+            tlds_for_block = pointer.tlds
+        else:
+            tlds_for_block = pointer.tlds  # reuse the same TLD set
+            batch = generate_word_batch(word_pointer, tlds_for_block, block_count)
+
         if not batch:
             print("No more domains to process within current configuration.")
             break
 
-        for domain, tld in batch:
-            if remaining <= 0:
-                break
+        print(f"Starting block: {mode_for_block} - {len(batch)} domains")
 
+        for domain, tld in batch:
             # Rotate resolver every 25 queries
             if queries_with_current >= 25:
                 resolver_index = (resolver_index + 1) % len(resolvers)
@@ -439,31 +537,47 @@ def run(count: int, api_base: str, api_key: str, dry_run: bool = False, print_ea
                 )
 
             update_aggregates(aggr, domain, tld, length, dns_info, http_info)
-            remaining -= 1
 
             # Optional small delay to avoid hammering endpoints too hard
             if per_request_delay_ms > 0:
                 time.sleep(per_request_delay_ms / 1000.0)
 
-    # Build payload for "today"
-    date_str = datetime.now(timezone.utc).date().isoformat()
-    payload = build_payload(date_str, aggr)
+        # Build and upload payload for this block
+        date_str = datetime.now(timezone.utc).date().isoformat()
+        payload = build_payload(date_str, aggr)
 
-    upload_aggregate(api_base, api_key, payload, dry_run=dry_run)
+        length_stats_list = payload.get("length_stats", [])
+        total_tracked_block = sum(ls.get("tracked_count", 0) for ls in length_stats_list)
+        status_code, body_text = upload_aggregate(api_base, api_key, payload, dry_run=dry_run)
 
-    # If upload succeeds (or we are in dry-run), save pointer so progress is kept
-    pointer.save()
+        # Simple console summary for the block
+        print(f"{mode_for_block} - {total_tracked_block} domains updated - {status_code} {body_text}")
+
+        # Save pointers so progress is kept
+        pointer.save()
+        word_pointer.save()
+
+        # Flip mode when both are enabled
+        if use_short and use_words:
+            next_mode = "words" if mode_for_block == "short" else "short"
+
+        # Optional pause between blocks to avoid constant hammering
+        if block_pause_seconds > 0:
+            print(f"Pausing for {block_pause_seconds} seconds before next block…")
+            time.sleep(block_pause_seconds)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="dom4in.net collector")
-    parser.add_argument("--count", type=int, default=25, help="Number of domains to process in this run")
     parser.add_argument("--api-base", type=str, default=None, help="Base URL for the backend API (overrides config file)")
     parser.add_argument("--api-key", type=str, default=None, help="Admin API key for upload (overrides config file)")
     parser.add_argument("--dry-run", action="store_true", help="Do not POST to backend, just print payload")
     parser.add_argument("--print-each", action="store_true", help="Print each domain and its classification as it is processed")
     parser.add_argument("--reset-pointer", action="store_true", help="Reset pointer to the beginning and exit")
     parser.add_argument("--reset-db", action="store_true", help="Reset aggregated stats in the backend database and exit")
+    parser.add_argument("--short", action="store_true", help="Enable short label mode (1-6 characters from charset)")
+    parser.add_argument("--word", action="store_true", help="Enable word-based mode using words_10_all.txt")
+    parser.add_argument("--pause", type=int, default=None, help="Optional pause in seconds between blocks when running continuously")
 
     args = parser.parse_args()
 
@@ -478,6 +592,11 @@ def main() -> None:
 
     api_base = args.api_base or config.get("api_base", "https://dom4in.net")
     api_key = args.api_key or config.get("admin_api_key", "")
+    cfg_block_pause = int(config.get("block_pause_seconds", 0)) if config else 0
+    if args.pause is not None:
+        block_pause_seconds = max(0, args.pause)
+    else:
+        block_pause_seconds = max(0, cfg_block_pause)
 
     if args.reset_db:
         if not api_key:
@@ -497,7 +616,15 @@ def main() -> None:
         print("Error: admin API key is required. Set it in collector/config.local.json or pass --api-key.")
         return
 
-    run(args.count, api_base, api_key, dry_run=args.dry_run, print_each=args.print_each)
+    run(
+        api_base,
+        api_key,
+        dry_run=args.dry_run,
+        print_each=args.print_each,
+        use_short=args.short,
+        use_words=args.word,
+        block_pause_seconds=block_pause_seconds,
+    )
 
 
 if __name__ == "__main__":
