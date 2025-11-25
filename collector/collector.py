@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Dict, List, Tuple
@@ -503,6 +504,7 @@ def run(
     use_short: bool = True,
     use_words: bool = False,
     block_pause_seconds: int = 0,
+    workers: int = 0,
 ) -> None:
     pointer = Pointer.load()
     word_pointer = WordPointer.load()
@@ -532,6 +534,9 @@ def run(
 
     resolver_index = 0
     queries_with_current = 0
+
+    # Normalize worker count (0 = single-threaded behavior)
+    worker_count = max(0, int(workers or 0))
 
     # Default mode: if neither flag is set, behave as "short" mode
     if not use_short and not use_words:
@@ -580,61 +585,105 @@ def run(
         batch_size_for_block = len(batch)
         print(f"Starting block: {mode_for_block} - {batch_size_for_block} domains")
 
-        for domain, tld in batch:
-            # Rotate resolver every 25 queries
-            if queries_with_current >= 25:
-                resolver_index = (resolver_index + 1) % len(resolvers)
-                queries_with_current = 0
-
-            resolver = resolvers[resolver_index]
-
+        def process_domain(domain: str, tld: str):
             label = domain.split(".")[0]
             length = len(label)
 
-            dns_info = check_domain_dns(domain, resolver)
-            if dns_info.get("resolver_error"):
-                # Mark this resolver as unhealthy for this run and move on to the next
-                print(f"Resolver {resolver.get('name', resolver_index)} had an error, rotating.")
-                resolver_index = (resolver_index + 1) % len(resolvers)
-                queries_with_current = 0
-                # Try once more with the next resolver
-                dns_info = check_domain_dns(domain, resolvers[resolver_index])
+            # In multi-threaded mode, pick a resolver per task; in single-threaded we keep
+            # the existing round-robin logic below.
+            if worker_count > 0:
+                # Try up to len(resolvers) different resolvers for this domain
+                dns_info = {"resolver_error": True}
+                start_index = random.randint(0, len(resolvers) - 1)
+                for i in range(len(resolvers)):
+                    resolver = resolvers[(start_index + i) % len(resolvers)]
+                    dns_info = check_domain_dns(domain, resolver)
+                    if not dns_info.get("resolver_error"):
+                        break
+                if dns_info.get("resolver_error"):
+                    # All resolvers failed for this domain in this attempt; treat as no DNS
+                    dns_info = {"registered": False, "has_dns": False, "resolver_error": True}
+                    print(f"All resolvers errored for {domain}; treating as no DNS.")
+            else:
+                nonlocal resolver_index, queries_with_current
+                if queries_with_current >= 25:
+                    resolver_index = (resolver_index + 1) % len(resolvers)
+                    queries_with_current = 0
 
-            queries_with_current += 1
+                resolver = resolvers[resolver_index]
+                dns_info = check_domain_dns(domain, resolver)
+                if dns_info.get("resolver_error"):
+                    print(f"Resolver {resolver.get('name', resolver_index)} had an error, rotating.")
+                    resolver_index = (resolver_index + 1) % len(resolvers)
+                    queries_with_current = 0
+                    dns_info = check_domain_dns(domain, resolvers[resolver_index])
+
+                queries_with_current += 1
 
             http_info = {"usage_state": "no_website", "product_state": "unknown"}
             if dns_info.get("registered"):
                 http_info = check_domain_http(domain)
 
-            if print_each:
-                print(
-                    f"{domain} -> registered={dns_info.get('registered')}, "
-                    f"has_dns={dns_info.get('has_dns')}, "
-                    f"usage={http_info.get('usage_state')}, "
-                    f"product={http_info.get('product_state')}"
+            return domain, tld, label, length, dns_info, http_info
+
+        if worker_count > 0:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [executor.submit(process_domain, domain, tld) for domain, tld in batch]
+                for fut in as_completed(futures):
+                    domain, tld, label, length, dns_info, http_info = fut.result()
+
+                    if print_each:
+                        print(
+                            f"{domain} -> registered={dns_info.get('registered')}, "
+                            f"has_dns={dns_info.get('has_dns')}, "
+                            f"usage={http_info.get('usage_state')}, "
+                            f"product={http_info.get('product_state')}"
+                        )
+
+                    track_lengths = mode_for_block == "short"
+                    pos_label = ""
+                    if mode_for_block == "words" and word_pos_index:
+                        pos_label = word_pos_index.get(label, "")
+                    update_aggregates(
+                        aggr,
+                        domain,
+                        tld,
+                        length,
+                        dns_info,
+                        http_info,
+                        track_length_stats=track_lengths,
+                        word_pos_label=pos_label,
+                    )
+        else:
+            for domain, tld in batch:
+                domain, tld, label, length, dns_info, http_info = process_domain(domain, tld)
+
+                if print_each:
+                    print(
+                        f"{domain} -> registered={dns_info.get('registered')}, "
+                        f"has_dns={dns_info.get('has_dns')}, "
+                        f"usage={http_info.get('usage_state')}, "
+                        f"product={http_info.get('product_state')}"
+                    )
+
+                track_lengths = mode_for_block == "short"
+                pos_label = ""
+                if mode_for_block == "words" and word_pos_index:
+                    pos_label = word_pos_index.get(label, "")
+                update_aggregates(
+                    aggr,
+                    domain,
+                    tld,
+                    length,
+                    dns_info,
+                    http_info,
+                    track_length_stats=track_lengths,
+                    word_pos_label=pos_label,
                 )
 
-            # Only short-mode batches should contribute to length_stats (1–10 character view).
-            # Word-mode batches still contribute to global/tld aggregates. POS stats are only
-            # tracked for dedicated word-mode blocks.
-            track_lengths = mode_for_block == "short"
-            pos_label = ""
-            if mode_for_block == "words" and word_pos_index:
-                pos_label = word_pos_index.get(label, "")
-            update_aggregates(
-                aggr,
-                domain,
-                tld,
-                length,
-                dns_info,
-                http_info,
-                track_length_stats=track_lengths,
-                word_pos_label=pos_label,
-            )
-
-            # Optional small delay to avoid hammering endpoints too hard
-            if per_request_delay_ms > 0:
-                time.sleep(per_request_delay_ms / 1000.0)
+                # Optional small delay to avoid hammering endpoints too hard (single-threaded only)
+                if per_request_delay_ms > 0:
+                    time.sleep(per_request_delay_ms / 1000.0)
 
         # Build and upload payload for this block
         date_str = datetime.now(timezone.utc).date().isoformat()
@@ -684,6 +733,7 @@ def main() -> None:
     parser.add_argument("--short", action="store_true", help="Enable short label mode (1-6 characters from charset)")
     parser.add_argument("--word", action="store_true", help="Enable word-based mode using words_10_all.txt")
     parser.add_argument("--pause", type=int, default=None, help="Optional pause in seconds between blocks when running continuously")
+    parser.add_argument("--workers", type=int, default=None, help="Optional number of worker threads for DNS/HTTP checks (0 = single-threaded)")
 
     args = parser.parse_args()
 
@@ -699,10 +749,16 @@ def main() -> None:
     api_base = args.api_base or config.get("api_base", "https://dom4in.net")
     api_key = args.api_key or config.get("admin_api_key", "")
     cfg_block_pause = int(config.get("block_pause_seconds", 0)) if config else 0
+    cfg_workers = int(config.get("worker_count", 0)) if config else 0
     if args.pause is not None:
         block_pause_seconds = max(0, args.pause)
     else:
         block_pause_seconds = max(0, cfg_block_pause)
+
+    if args.workers is not None:
+        workers = max(0, args.workers)
+    else:
+        workers = max(0, cfg_workers)
 
     if args.reset_db:
         if not api_key:
@@ -730,6 +786,7 @@ def main() -> None:
         use_short=args.short,
         use_words=args.word,
         block_pause_seconds=block_pause_seconds,
+        workers=workers,
     )
 
 
