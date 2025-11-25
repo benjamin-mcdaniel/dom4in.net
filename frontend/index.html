@@ -32,6 +32,10 @@
     .length-chart-seg-unused { background: #eab308; }
     .length-chart-seg-other { background: #22c55e; }
     .length-chart-legend { margin-top: 0.5rem; font-size: 0.75rem; color: #9ca3af; display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    .word-chart-grid { margin-top: 0.5rem; display: grid; gap: 0.5rem; }
+    .word-chart-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: #d1d5db; }
+    .word-chart-label { width: 3rem; text-transform: uppercase; font-size: 0.75rem; }
+    .word-chart-bar { flex: 1; height: 0.6rem; border-radius: 999px; overflow: hidden; display: flex; background: #020617; border: 1px solid #111827; }
     .legend-item { display: inline-flex; align-items: center; gap: 0.25rem; }
     .legend-swatch { width: 0.7rem; height: 0.7rem; border-radius: 999px; }
     #status { font-size: 0.875rem; color: #9ca3af; margin-top: 0.75rem; }
@@ -95,6 +99,16 @@
             <div class="card-value" id="kpi-24h">–</div>
           </div>
         </div>
+      </section>
+
+      <section id="word-stats" style="margin-top: 1.5rem; font-size: 0.85rem; color: #d1d5db;">
+        <h2>Word-based domains</h2>
+        <p style="color: #9ca3af; margin-top: 0.25rem;">
+          These aggregates look at real English words (nouns, verbs, adjectives, adverbs)
+          used as the label before the dot, across the same core TLD set.
+        </p>
+        <div id="word-charts" class="word-chart-grid"></div>
+        <div id="word-status" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
       </section>
 
       <section id="about" style="margin-top: 1.5rem; font-size: 0.9rem; color: #d1d5db;">
@@ -228,7 +242,112 @@
       }
     }
 
+    async function loadWordStats() {
+      const wordStatusEl = document.getElementById('word-status');
+      const chartsEl = document.getElementById('word-charts');
+      if (!wordStatusEl || !chartsEl) {
+        return;
+      }
+
+      try {
+        wordStatusEl.textContent = 'Loading word-based stats…';
+        chartsEl.innerHTML = '';
+
+        const res = await fetch('/api/stats/words');
+        if (!res.ok) {
+          wordStatusEl.textContent = 'Word-based stats are not available yet.';
+          return;
+        }
+
+        const data = await res.json();
+        const rows = data.word_pos_stats || [];
+        if (!rows.length) {
+          wordStatusEl.textContent = 'Word-based stats are not available yet.';
+          return;
+        }
+
+        const byPos = {};
+        rows.forEach(row => {
+          const pos = row.pos || 'other';
+          if (!byPos[pos]) {
+            byPos[pos] = { tracked: 0, unregistered: 0, unused: 0 };
+          }
+          byPos[pos].tracked += row.tracked || 0;
+          byPos[pos].unregistered += row.unregistered_found || 0;
+          byPos[pos].unused += row.unused_found || 0;
+        });
+
+        const order = ['noun', 'verb', 'adj', 'adv'];
+        const humanLabel = {
+          noun: 'Nouns',
+          verb: 'Verbs',
+          adj: 'Adjectives',
+          adv: 'Adverbs',
+        };
+
+        let anyRendered = false;
+        order.forEach(pos => {
+          const agg = byPos[pos];
+          if (!agg || agg.tracked <= 0) {
+            return;
+          }
+
+          const total = agg.tracked;
+          const unregPct = (agg.unregistered / total) * 100;
+          const unusedPct = (agg.unused / total) * 100;
+          const otherPct = Math.max(0, 100 - unregPct - unusedPct);
+
+          const rowEl = document.createElement('div');
+          rowEl.className = 'word-chart-row';
+
+          const labelEl = document.createElement('div');
+          labelEl.className = 'word-chart-label';
+          labelEl.textContent = humanLabel[pos] || pos.toUpperCase();
+          rowEl.appendChild(labelEl);
+
+          const barEl = document.createElement('div');
+          barEl.className = 'word-chart-bar';
+
+          const segUnreg = document.createElement('div');
+          segUnreg.className = 'length-chart-seg-unreg';
+          segUnreg.style.width = unregPct.toFixed(2) + '%';
+
+          const segUnused = document.createElement('div');
+          segUnused.className = 'length-chart-seg-unused';
+          segUnused.style.width = unusedPct.toFixed(2) + '%';
+
+          const segOther = document.createElement('div');
+          segOther.className = 'length-chart-seg-other';
+          segOther.style.width = otherPct.toFixed(2) + '%';
+
+          barEl.appendChild(segUnreg);
+          barEl.appendChild(segUnused);
+          barEl.appendChild(segOther);
+          rowEl.appendChild(barEl);
+
+          const pctLabel = document.createElement('div');
+          pctLabel.style.minWidth = '7rem';
+          pctLabel.style.textAlign = 'right';
+          pctLabel.textContent = `${unregPct.toFixed(1)}% / ${unusedPct.toFixed(1)}%`;
+          rowEl.appendChild(pctLabel);
+
+          chartsEl.appendChild(rowEl);
+          anyRendered = true;
+        });
+
+        if (anyRendered) {
+          wordStatusEl.textContent = 'Word-based stats loaded.';
+        } else {
+          wordStatusEl.textContent = 'Word-based stats are not available yet.';
+        }
+      } catch (err) {
+        console.error(err);
+        wordStatusEl.textContent = 'Failed to load word-based stats.';
+      }
+    }
+
     loadOverview();
+    loadWordStats();
   </script>
 </body>
 </html>

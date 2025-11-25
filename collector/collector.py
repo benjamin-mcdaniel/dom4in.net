@@ -496,10 +496,20 @@ def run(
         elif mode_for_block == "words" and not use_words and use_short:
             mode_for_block = "short"
 
+        # Short blocks: 60% iterative charset labels, 40% dictionary words (both counted in length_stats).
+        # Word blocks: dictionary/POS-only, reserved for future word_pos_stats (do not affect length_stats).
         if mode_for_block == "short":
             pointer.batch_size = block_count
-            batch = generate_batch(pointer)
-            # set up tlds for short mode
+            # 60/40 split between iterative and dictionary-based labels
+            if random.random() < 0.6:
+                batch = generate_batch(pointer)
+                short_variant = "iter"
+            else:
+                tlds_for_block = pointer.tlds  # reuse same TLD set
+                batch = generate_word_batch(word_pointer, tlds_for_block, block_count)
+                short_variant = "words"
+            # for logging clarity
+            print(f"  short-mode variant: {short_variant}")
             tlds_for_block = pointer.tlds
         else:
             tlds_for_block = pointer.tlds  # reuse the same TLD set
@@ -509,7 +519,8 @@ def run(
             print("No more domains to process within current configuration.")
             break
 
-        print(f"Starting block: {mode_for_block} - {len(batch)} domains")
+        batch_size_for_block = len(batch)
+        print(f"Starting block: {mode_for_block} - {batch_size_for_block} domains")
 
         for domain, tld in batch:
             # Rotate resolver every 25 queries
@@ -563,7 +574,19 @@ def run(
         status_code, body_text = upload_aggregate(api_base, api_key, payload, dry_run=dry_run)
 
         # Simple console summary for the block
-        print(f"{mode_for_block} - {total_tracked_block} domains updated - {status_code} {body_text}")
+        if mode_for_block == "short":
+            # Short-mode batches contribute to length_stats (1–10 character view).
+            print(
+                f"short - {total_tracked_block} domains updated in length_stats "
+                f"(out of {batch_size_for_block} processed) - {status_code} {body_text}"
+            )
+        else:
+            # Word-mode batches only affect global/tld aggregates (and future word_pos_stats),
+            # so length_stats rows remain unchanged for these blocks.
+            print(
+                f"words - {batch_size_for_block} domains processed "
+                f"(0 length_stats rows updated) - {status_code} {body_text}"
+            )
 
         # Save pointers so progress is kept
         pointer.save()
