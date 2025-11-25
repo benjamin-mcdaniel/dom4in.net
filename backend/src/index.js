@@ -85,7 +85,7 @@ export default {
         });
       }
 
-      const { date, global, length_stats } = body || {};
+      const { date, global, length_stats, word_pos_stats } = body || {};
       if (!date || !global || !Array.isArray(length_stats)) {
         return new Response(JSON.stringify({ error: "invalid_payload" }), {
           status: 400,
@@ -129,6 +129,31 @@ export default {
             .run();
         }
 
+        // Optional word POS stats: cumulative lifetime under snap_date = 'overall'
+        if (Array.isArray(word_pos_stats)) {
+          for (const row of word_pos_stats) {
+            await env.DB.prepare(
+              "INSERT INTO word_pos_stats (snap_date, tld, pos, length, tracked_count, unregistered_found, unused_found) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+                "ON CONFLICT(snap_date, tld, pos, length) DO UPDATE SET " +
+                "tracked_count = word_pos_stats.tracked_count + excluded.tracked_count, " +
+                "unregistered_found = word_pos_stats.unregistered_found + excluded.unregistered_found, " +
+                "unused_found = word_pos_stats.unused_found + excluded.unused_found, " +
+                "updated_at = datetime('now')"
+            )
+              .bind(
+                "overall",
+                row.tld || "ALL",
+                row.pos,
+                row.length,
+                row.tracked_count || 0,
+                row.unregistered_found || 0,
+                row.unused_found || 0
+              )
+              .run();
+          }
+        }
+
         return new Response(JSON.stringify({ ok: true }), {
           headers: { "Content-Type": "application/json" },
         });
@@ -153,6 +178,7 @@ export default {
         await env.DB.prepare("DELETE FROM global_stats").run();
         await env.DB.prepare("DELETE FROM length_stats").run();
         await env.DB.prepare("DELETE FROM tld_stats").run();
+        await env.DB.prepare("DELETE FROM word_pos_stats").run();
 
         return new Response(JSON.stringify({ ok: true }), {
           headers: { "Content-Type": "application/json" },
@@ -160,6 +186,33 @@ export default {
       } catch (err) {
         return new Response(
           JSON.stringify({ error: "failed_to_reset_stats", message: String(err) }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    if (url.pathname === "/api/stats/words") {
+      try {
+        const rows = await env.DB.prepare(
+          "SELECT pos, length, tracked_count, unregistered_found, unused_found FROM word_pos_stats WHERE snap_date = ? AND tld = ? ORDER BY pos, length"
+        )
+          .bind("overall", "ALL")
+          .all();
+
+        const word_pos_stats = (rows.results || []).map((row) => ({
+          pos: row.pos,
+          length: row.length,
+          tracked: row.tracked_count,
+          unregistered_found: row.unregistered_found,
+          unused_found: row.unused_found,
+        }));
+
+        return new Response(JSON.stringify({ word_pos_stats }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        return new Response(
+          JSON.stringify({ error: "failed_to_load_word_stats", message: String(err) }),
           { status: 500, headers: { "Content-Type": "application/json" } }
         );
       }
