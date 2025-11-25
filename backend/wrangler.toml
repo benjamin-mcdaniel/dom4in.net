@@ -5,7 +5,7 @@ compatibility_date = "2024-01-01"
 [[d1_databases]]
 binding = "DB"         # Used in the Worker code
 database_name = "DOM4IN_DB"
-database_id = ""       # Fill this in after creating the D1 database in Cloudflare
+database_id = "3954177a-2641-403a-a936-346443d59eac"       # Existing D1 database ID
 
 [vars]
 # Placeholder for an admin API key used by the local uploader script

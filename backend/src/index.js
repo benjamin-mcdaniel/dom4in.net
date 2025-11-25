@@ -11,8 +11,13 @@ export default {
 
     if (url.pathname === "/api/stats/overview") {
       try {
+        // Lifetime = sum across all days; 24h = latest day's value
+        const lifetimeRow = await env.DB.prepare(
+          "SELECT COALESCE(SUM(domains_tracked_lifetime), 0) AS lifetime_total FROM global_stats"
+        ).first();
+
         const latestGlobal = await env.DB.prepare(
-          "SELECT date, domains_tracked_lifetime, domains_tracked_24h, updated_at FROM global_stats ORDER BY date DESC LIMIT 1"
+          "SELECT date, domains_tracked_24h, updated_at FROM global_stats ORDER BY date DESC LIMIT 1"
         ).first();
 
         if (!latestGlobal) {
@@ -26,7 +31,8 @@ export default {
           });
         }
 
-        const { date, domains_tracked_lifetime, domains_tracked_24h, updated_at } = latestGlobal;
+        const { date, domains_tracked_24h, updated_at } = latestGlobal;
+        const domains_tracked_lifetime = lifetimeRow?.lifetime_total ?? 0;
 
         const lengthRows = await env.DB.prepare(
           "SELECT length, total_possible, tracked_count, unregistered_found, unused_found FROM length_stats WHERE snap_date = ? AND tld = ? ORDER BY length ASC"
