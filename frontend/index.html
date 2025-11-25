@@ -108,6 +108,8 @@
           used as the label before the dot, across the same core TLD set.
         </p>
         <div id="word-charts" class="word-chart-grid"></div>
+        <div id="word-overall" style="margin-top: 0.75rem;"></div>
+        <div id="word-summary" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
         <div id="word-status" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
       </section>
 
@@ -245,13 +247,17 @@
     async function loadWordStats() {
       const wordStatusEl = document.getElementById('word-status');
       const chartsEl = document.getElementById('word-charts');
-      if (!wordStatusEl || !chartsEl) {
+      const overallEl = document.getElementById('word-overall');
+      const summaryEl = document.getElementById('word-summary');
+      if (!wordStatusEl || !chartsEl || !overallEl || !summaryEl) {
         return;
       }
 
       try {
         wordStatusEl.textContent = 'Loading word-based stats…';
         chartsEl.innerHTML = '';
+        overallEl.innerHTML = '';
+        summaryEl.textContent = '';
 
         const res = await fetch('/api/stats/words');
         if (!res.ok) {
@@ -267,6 +273,9 @@
         }
 
         const byPos = {};
+        let totalTrackedWords = 0;
+        let totalUnregisteredWords = 0;
+        let totalUnusedWords = 0;
         rows.forEach(row => {
           const pos = row.pos || 'other';
           if (!byPos[pos]) {
@@ -275,6 +284,10 @@
           byPos[pos].tracked += row.tracked || 0;
           byPos[pos].unregistered += row.unregistered_found || 0;
           byPos[pos].unused += row.unused_found || 0;
+
+          totalTrackedWords += row.tracked || 0;
+          totalUnregisteredWords += row.unregistered_found || 0;
+          totalUnusedWords += row.unused_found || 0;
         });
 
         const order = ['noun', 'verb', 'adj', 'adv'];
@@ -335,11 +348,72 @@
           anyRendered = true;
         });
 
-        if (anyRendered) {
-          wordStatusEl.textContent = 'Word-based stats loaded.';
-        } else {
+        if (!anyRendered) {
           wordStatusEl.textContent = 'Word-based stats are not available yet.';
+          return;
         }
+
+        // Overall bar and numeric summary across all word-mode domains
+        if (totalTrackedWords > 0) {
+          const unregPctAll = (totalUnregisteredWords / totalTrackedWords) * 100;
+          const unusedPctAll = (totalUnusedWords / totalTrackedWords) * 100;
+          const otherPctAll = Math.max(0, 100 - unregPctAll - unusedPctAll);
+
+          const rowEl = document.createElement('div');
+          rowEl.className = 'word-chart-row';
+
+          const labelEl = document.createElement('div');
+          labelEl.className = 'word-chart-label';
+          labelEl.textContent = 'All words';
+          rowEl.appendChild(labelEl);
+
+          const barEl = document.createElement('div');
+          barEl.className = 'word-chart-bar';
+
+          const segUnreg = document.createElement('div');
+          segUnreg.className = 'length-chart-seg-unreg';
+          segUnreg.style.width = unregPctAll.toFixed(2) + '%';
+
+          const segUnused = document.createElement('div');
+          segUnused.className = 'length-chart-seg-unused';
+          segUnused.style.width = unusedPctAll.toFixed(2) + '%';
+
+          const segOther = document.createElement('div');
+          segOther.className = 'length-chart-seg-other';
+          segOther.style.width = otherPctAll.toFixed(2) + '%';
+
+          barEl.appendChild(segUnreg);
+          barEl.appendChild(segUnused);
+          barEl.appendChild(segOther);
+          rowEl.appendChild(barEl);
+
+          const pctLabel = document.createElement('div');
+          pctLabel.style.minWidth = '7rem';
+          pctLabel.style.textAlign = 'right';
+          pctLabel.textContent = `${unregPctAll.toFixed(1)}% / ${unusedPctAll.toFixed(1)}%`;
+          rowEl.appendChild(pctLabel);
+
+          overallEl.appendChild(rowEl);
+
+          const posCounts = order
+            .map(pos => {
+              const agg = byPos[pos];
+              if (!agg || agg.tracked <= 0) return null;
+              return `${humanLabel[pos]}: ${agg.tracked.toLocaleString()}`;
+            })
+            .filter(Boolean)
+            .join(', ');
+
+          summaryEl.innerHTML = `
+            Across all word-based labels, we have run <strong>${totalTrackedWords.toLocaleString()}</strong>
+            domain searches so far. Of these, roughly
+            <strong>${unregPctAll.toFixed(1)}%</strong> appeared unregistered (no DNS) and
+            <strong>${unusedPctAll.toFixed(1)}%</strong> were registered but unused/parked.
+            Per part of speech: ${posCounts || 'n/a'}.
+          `;
+        }
+
+        wordStatusEl.textContent = 'Word-based stats loaded.';
       } catch (err) {
         console.error(err);
         wordStatusEl.textContent = 'Failed to load word-based stats.';
