@@ -46,3 +46,20 @@ CREATE TABLE IF NOT EXISTS tld_stats (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tld_stats_unique
   ON tld_stats (snap_date, tld);
+
+-- Word-based stats by part-of-speech (POS) and length
+CREATE TABLE IF NOT EXISTS word_pos_stats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snap_date TEXT NOT NULL,
+  tld TEXT NOT NULL,
+  pos TEXT NOT NULL,
+  length INTEGER NOT NULL,
+  tracked_count INTEGER NOT NULL DEFAULT 0,
+  unregistered_found INTEGER NOT NULL DEFAULT 0,
+  unused_found INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_word_pos_stats_unique
+  ON word_pos_stats (snap_date, tld, pos, length);
