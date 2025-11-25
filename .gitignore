@@ -4,6 +4,10 @@ collector/state_pointer.json
 # Local word-mode collector state and dictionaries
 collector/state_words_pointer.json
 wordlists/words_10_all.txt
+wordlists/words_10_nouns.txt
+wordlists/words_10_verbs.txt
+wordlists/words_10_adjectives.txt
+wordlists/words_10_adverbs.txt
 
 # Local collector config (API keys, etc.)
 collector/config.local.json
