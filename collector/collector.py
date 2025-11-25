@@ -302,27 +302,36 @@ def init_aggregates() -> Dict:
     }
 
 
-def update_aggregates(aggr: Dict, domain: str, tld: str, length: int, dns_info: Dict, http_info: Dict) -> None:
+def update_aggregates(
+    aggr: Dict,
+    domain: str,
+    tld: str,
+    length: int,
+    dns_info: Dict,
+    http_info: Dict,
+    track_length_stats: bool = True,
+) -> None:
     g = aggr["global"]
     g["domains_tracked_lifetime"] += 1
     g["domains_tracked_24h"] += 1
 
-    ls = aggr["length_stats"].setdefault(length, {
-        "length": length,
-        "total_possible": len(CHARSET) ** length,
-        "tracked_count": 0,
-        "unregistered_found": 0,
-        "unused_found": 0,
-    })
+    if track_length_stats:
+        ls = aggr["length_stats"].setdefault(length, {
+            "length": length,
+            "total_possible": len(CHARSET) ** length,
+            "tracked_count": 0,
+            "unregistered_found": 0,
+            "unused_found": 0,
+        })
 
-    ls["tracked_count"] += 1
+        ls["tracked_count"] += 1
 
-    if not dns_info.get("registered"):
-        ls["unregistered_found"] += 1
-    else:
-        usage_state = http_info.get("usage_state")
-        if usage_state in {"no_website", "parked_or_placeholder"}:
-            ls["unused_found"] += 1
+        if not dns_info.get("registered"):
+            ls["unregistered_found"] += 1
+        else:
+            usage_state = http_info.get("usage_state")
+            if usage_state in {"no_website", "parked_or_placeholder"}:
+                ls["unused_found"] += 1
 
     ts = aggr["tld_stats"].setdefault(tld, {
         "tld": tld,
@@ -536,7 +545,10 @@ def run(
                     f"product={http_info.get('product_state')}"
                 )
 
-            update_aggregates(aggr, domain, tld, length, dns_info, http_info)
+            # Only short-mode batches should contribute to length_stats (1–10 character view).
+            # Word-mode batches still contribute to global/tld aggregates.
+            track_lengths = mode_for_block == "short"
+            update_aggregates(aggr, domain, tld, length, dns_info, http_info, track_length_stats=track_lengths)
 
             # Optional small delay to avoid hammering endpoints too hard
             if per_request_delay_ms > 0:
