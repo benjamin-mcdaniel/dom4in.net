@@ -18,6 +18,11 @@ POINTER_FILE = os.path.join(BASE_DIR, "state_pointer.json")
 WORDS_POINTER_FILE = os.path.join(BASE_DIR, "state_words_pointer.json")
 REPO_ROOT = os.path.abspath(os.path.join(BASE_DIR, os.pardir))
 WORDS_FILE = os.path.join(REPO_ROOT, "wordlists", "words_10_all.txt")
+WORDS_DIR = os.path.join(REPO_ROOT, "wordlists")
+WORDS_NOUNS_PATH = os.path.join(WORDS_DIR, "words_10_nouns.txt")
+WORDS_VERBS_PATH = os.path.join(WORDS_DIR, "words_10_verbs.txt")
+WORDS_ADJECTIVES_PATH = os.path.join(WORDS_DIR, "words_10_adjectives.txt")
+WORDS_ADVERBS_PATH = os.path.join(WORDS_DIR, "words_10_adverbs.txt")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.local.json")
 
 
@@ -143,6 +148,28 @@ def load_words() -> List[str]:
         )
     with open(WORDS_FILE, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip()]
+
+
+def load_word_pos_index() -> Dict[str, str]:
+    index: Dict[str, str] = {}
+
+    def load_pos(path: str, code: str) -> None:
+        if not os.path.exists(path):
+            return
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                w = line.strip()
+                if not w:
+                    continue
+                if w not in index:
+                    index[w] = code
+
+    load_pos(WORDS_NOUNS_PATH, "noun")
+    load_pos(WORDS_VERBS_PATH, "verb")
+    load_pos(WORDS_ADJECTIVES_PATH, "adj")
+    load_pos(WORDS_ADVERBS_PATH, "adv")
+
+    return index
 
 
 def generate_word_batch(word_pointer: WordPointer, tlds: List[str], count: int) -> List[Tuple[str, str]]:
@@ -299,6 +326,7 @@ def init_aggregates() -> Dict:
         },
         "length_stats": {},  # key: length -> counters
         "tld_stats": {},     # key: tld -> counters (for future use)
+        "word_pos_stats": {},  # key: (pos, length) -> counters
     }
 
 
@@ -310,6 +338,7 @@ def update_aggregates(
     dns_info: Dict,
     http_info: Dict,
     track_length_stats: bool = True,
+    word_pos_label: str = "",
 ) -> None:
     g = aggr["global"]
     g["domains_tracked_lifetime"] += 1
@@ -354,15 +383,39 @@ def update_aggregates(
             elif usage_state == "active_site":
                 ts["short_active_site_count"] += 1
 
+    if word_pos_label:
+        key = (word_pos_label, length)
+        wps = aggr["word_pos_stats"].setdefault(key, {
+            "pos": word_pos_label,
+            "length": length,
+            "tracked_count": 0,
+            "unregistered_found": 0,
+            "unused_found": 0,
+        })
+
+        wps["tracked_count"] += 1
+
+        if not dns_info.get("registered"):
+            wps["unregistered_found"] += 1
+        else:
+            usage_state = http_info.get("usage_state")
+            if usage_state in {"no_website", "parked_or_placeholder"}:
+                wps["unused_found"] += 1
+
 
 def build_payload(date_str: str, aggr: Dict) -> Dict:
     length_stats_list = sorted(aggr["length_stats"].values(), key=lambda x: x["length"])
+    word_pos_stats_list = sorted(
+        aggr["word_pos_stats"].values(),
+        key=lambda x: (x["pos"], x["length"]),
+    )
 
     # tld_stats can be added later to the upload payload when the Worker supports it
     payload = {
         "date": date_str,
         "global": aggr["global"],
         "length_stats": length_stats_list,
+        "word_pos_stats": word_pos_stats_list,
     }
 
     return payload
@@ -453,6 +506,11 @@ def run(
 ) -> None:
     pointer = Pointer.load()
     word_pointer = WordPointer.load()
+
+    try:
+        word_pos_index = load_word_pos_index()
+    except Exception:
+        word_pos_index = {}
 
     # Load DNS resolvers (from config if available, else defaults)
     config_resolvers = []
@@ -557,9 +615,22 @@ def run(
                 )
 
             # Only short-mode batches should contribute to length_stats (1–10 character view).
-            # Word-mode batches still contribute to global/tld aggregates.
+            # Word-mode batches still contribute to global/tld aggregates. POS stats are only
+            # tracked for dedicated word-mode blocks.
             track_lengths = mode_for_block == "short"
-            update_aggregates(aggr, domain, tld, length, dns_info, http_info, track_length_stats=track_lengths)
+            pos_label = ""
+            if mode_for_block == "words" and word_pos_index:
+                pos_label = word_pos_index.get(label, "")
+            update_aggregates(
+                aggr,
+                domain,
+                tld,
+                length,
+                dns_info,
+                http_info,
+                track_length_stats=track_lengths,
+                word_pos_label=pos_label,
+            )
 
             # Optional small delay to avoid hammering endpoints too hard
             if per_request_delay_ms > 0:
