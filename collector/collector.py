@@ -532,11 +532,49 @@ def run(
         print("Error: no DNS resolvers configured.")
         return
 
-    resolver_index = 0
-    queries_with_current = 0
+    # Per-resolver pacing and simple error tracking so we don't hammer a single endpoint
+    # even when using many worker threads.
+    now_ms = lambda: int(time.monotonic() * 1000)
+    resolver_state = []
+    for r in resolvers:
+        # Allow per-resolver override; fall back to global per_request_delay_ms (if any),
+        # otherwise no enforced delay.
+        min_delay_ms = int(r.get("min_delay_ms", per_request_delay_ms or 0))
+        resolver_state.append(
+            {
+                "name": r.get("name", ""),
+                "min_delay_ms": max(0, min_delay_ms),
+                "last_used_ms": 0,
+                "ok": 0,
+                "err": 0,
+            }
+        )
 
     # Normalize worker count (0 = single-threaded behavior)
     worker_count = max(0, int(workers or 0))
+
+    def pick_resolver() -> Tuple[Dict, int]:
+        """Pick a resolver respecting per-resolver min_delay_ms as best we can.
+
+        Returns (resolver_dict, index_in_resolvers).
+        """
+        now = now_ms()
+        chosen_idx = None
+
+        # First pass: prefer any resolver whose min delay window has elapsed
+        for idx, state in enumerate(resolver_state):
+            min_delay = state["min_delay_ms"]
+            last_used = state["last_used_ms"]
+            if min_delay <= 0 or now - last_used >= min_delay:
+                chosen_idx = idx
+                break
+
+        # Fallback: if all are still "cooling down", just pick the first one
+        if chosen_idx is None:
+            chosen_idx = 0
+
+        resolver_state[chosen_idx]["last_used_ms"] = now
+        return resolvers[chosen_idx], chosen_idx
 
     # Default mode: if neither flag is set, behave as "short" mode
     if not use_short and not use_words:
@@ -589,36 +627,22 @@ def run(
             label = domain.split(".")[0]
             length = len(label)
 
-            # In multi-threaded mode, pick a resolver per task; in single-threaded we keep
-            # the existing round-robin logic below.
-            if worker_count > 0:
-                # Try up to len(resolvers) different resolvers for this domain
-                dns_info = {"resolver_error": True}
-                start_index = random.randint(0, len(resolvers) - 1)
-                for i in range(len(resolvers)):
-                    resolver = resolvers[(start_index + i) % len(resolvers)]
-                    dns_info = check_domain_dns(domain, resolver)
-                    if not dns_info.get("resolver_error"):
-                        break
-                if dns_info.get("resolver_error"):
-                    # All resolvers failed for this domain in this attempt; treat as no DNS
-                    dns_info = {"registered": False, "has_dns": False, "resolver_error": True}
-                    print(f"All resolvers errored for {domain}; treating as no DNS.")
-            else:
-                nonlocal resolver_index, queries_with_current
-                if queries_with_current >= 25:
-                    resolver_index = (resolver_index + 1) % len(resolvers)
-                    queries_with_current = 0
-
-                resolver = resolvers[resolver_index]
+            # Try up to len(resolvers) different resolvers for this domain, respecting
+            # per-resolver delay as best we can.
+            dns_info = {"resolver_error": True}
+            for _ in range(len(resolvers)):
+                resolver, idx = pick_resolver()
                 dns_info = check_domain_dns(domain, resolver)
                 if dns_info.get("resolver_error"):
-                    print(f"Resolver {resolver.get('name', resolver_index)} had an error, rotating.")
-                    resolver_index = (resolver_index + 1) % len(resolvers)
-                    queries_with_current = 0
-                    dns_info = check_domain_dns(domain, resolvers[resolver_index])
+                    resolver_state[idx]["err"] += 1
+                    continue
+                resolver_state[idx]["ok"] += 1
+                break
 
-                queries_with_current += 1
+            if dns_info.get("resolver_error"):
+                # All resolvers failed for this domain in this attempt; treat as no DNS
+                dns_info = {"registered": False, "has_dns": False, "resolver_error": True}
+                print(f"All resolvers errored for {domain}; treating as no DNS.")
 
             http_info = {"usage_state": "no_website", "product_state": "unknown"}
             if dns_info.get("registered"):
@@ -715,11 +739,6 @@ def run(
         # Flip mode when both are enabled
         if use_short and use_words:
             next_mode = "words" if mode_for_block == "short" else "short"
-
-        # Optional pause between blocks to avoid constant hammering
-        if block_pause_seconds > 0:
-            print(f"Pausing for {block_pause_seconds} seconds before next block…")
-            time.sleep(block_pause_seconds)
 
 
 def main() -> None:
