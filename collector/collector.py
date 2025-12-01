@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
@@ -28,7 +28,7 @@ CONFIG_FILE = os.path.join(BASE_DIR, "config.local.json")
 
 
 CHARSET = "abcdefghijklmnopqrstuvwxyz"
-MAX_LENGTH = 6
+MAX_LENGTH = 10
 
 # Default DNS-over-HTTPS resolvers (you can override these in config.local.json)
 DEFAULT_DNS_RESOLVERS = [
@@ -58,8 +58,10 @@ class Pointer:
     max_length: int = MAX_LENGTH
     tld_index: int = 0
     length: int = 1
-    index: int = 0  # position within the current length space
+    index: int = 0  # legacy: position within the current length space
     batch_size: int = 25
+    # Per-length state mapping: length (as string) -> {tld_index, index, done}
+    length_states: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     @property
     def tlds(self) -> List[str]:
@@ -79,10 +81,41 @@ class Pointer:
     @classmethod
     def load(cls) -> "Pointer":
         if not os.path.exists(POINTER_FILE):
-            return cls()
-        with open(POINTER_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return cls(**data)
+            ptr = cls()
+        else:
+            with open(POINTER_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            ptr = cls(**data)
+
+        # Migrate older pointer state to per-length tracking if needed
+        if getattr(ptr, "version", 1) < 2 or not getattr(ptr, "length_states", None):
+            ptr.migrate_to_v2()
+        return ptr
+
+    def migrate_to_v2(self) -> None:
+        """Initialize per-length state based on the legacy single-pointer fields.
+
+        Lengths below the current length are treated as fully completed; the current
+        length reuses the stored tld_index/index; higher lengths start from zero.
+        """
+        length_states: Dict[str, Dict[str, int]] = {}
+        for L in range(1, self.max_length + 1):
+            total_for_length = len(self.charset) ** L
+            key = str(L)
+            if L < self.length:
+                # All labels for this length have been iterated across all TLDs.
+                length_states[key] = {"tld_index": 0, "index": total_for_length, "done": True}
+            elif L == self.length:
+                length_states[key] = {
+                    "tld_index": max(0, min(self.tld_index, len(self.tlds) - 1)),
+                    "index": max(0, self.index),
+                    "done": False,
+                }
+            else:
+                length_states[key] = {"tld_index": 0, "index": 0, "done": False}
+
+        self.length_states = length_states
+        self.version = 2
 
 
 def index_to_label(idx: int, length: int, charset: str) -> str:
@@ -95,9 +128,10 @@ def index_to_label(idx: int, length: int, charset: str) -> str:
 
 
 def generate_batch(pointer: Pointer) -> List[Tuple[str, str]]:
-    """Return a batch of (domain, tld) pairs and advance the pointer in-memory.
+    """Return a batch of (domain, tld) pairs using the legacy single-pointer scheme.
 
-    Pointer is not saved here; caller should call pointer.save() after a successful batch.
+    This is kept for compatibility but new code should prefer generate_batch_for_length
+    together with Pointer.length_states.
     """
     batch: List[Tuple[str, str]] = []
 
@@ -120,6 +154,53 @@ def generate_batch(pointer: Pointer) -> List[Tuple[str, str]]:
 
         domain = f"{label}.{tld}"
         batch.append((domain, tld))
+
+    return batch
+
+
+def generate_batch_for_length(
+    length_state: Dict[str, int],
+    length: int,
+    charset: str,
+    tlds: List[str],
+    batch_size: int,
+) -> List[Tuple[str, str]]:
+    """Generate a batch of (domain, tld) pairs for a specific label length.
+
+    Advances the provided per-length state in-place and marks the length as done
+    when all charset^length × TLD combinations have been exhausted.
+    """
+    batch: List[Tuple[str, str]] = []
+
+    total_for_length = len(charset) ** length
+    tld_index = int(length_state.get("tld_index", 0) or 0)
+    index = int(length_state.get("index", 0) or 0)
+    done_flag = bool(length_state.get("done", False))
+
+    if done_flag or total_for_length <= 0 or not tlds:
+        length_state["done"] = True
+        return batch
+
+    while len(batch) < batch_size and not done_flag:
+        if index >= total_for_length:
+            # Finished this TLD's space for this length; move to next TLD.
+            index = 0
+            tld_index += 1
+            if tld_index >= len(tlds):
+                # All TLDs exhausted for this length.
+                done_flag = True
+                break
+
+        tld = tlds[tld_index]
+        label = index_to_label(index, length, charset)
+        index += 1
+
+        domain = f"{label}.{tld}"
+        batch.append((domain, tld))
+
+    length_state["tld_index"] = tld_index
+    length_state["index"] = index
+    length_state["done"] = done_flag
 
     return batch
 
@@ -601,17 +682,40 @@ def run(
         # Word blocks: dictionary/POS-only, reserved for future word_pos_stats (do not affect length_stats).
         if mode_for_block == "short":
             pointer.batch_size = block_count
-            # 60/40 split between iterative and dictionary-based labels
+            tlds_for_block = pointer.tlds
+
+            # 60/40 split between iterative and dictionary-based labels.
             if random.random() < 0.6:
-                batch = generate_batch(pointer)
-                short_variant = "iter"
+                # Iterative variant: pick a random unfinished length and advance its pointer.
+                length_states = pointer.length_states or {}
+                active_lengths = [
+                    L
+                    for L, st in length_states.items()
+                    if not st.get("done")
+                ]
+
+                if active_lengths:
+                    # Keys are strings; convert to ints for readability and randomness.
+                    length_for_block = int(random.choice(active_lengths))
+                    state = pointer.length_states[str(length_for_block)]
+                    batch = generate_batch_for_length(
+                        state,
+                        length_for_block,
+                        pointer.charset,
+                        tlds_for_block,
+                        block_count,
+                    )
+                    short_variant = f"iter_len_{length_for_block}"
+                else:
+                    # All lengths exhausted for iterative labels; fall back to word-based short variant.
+                    batch = generate_word_batch(word_pointer, tlds_for_block, block_count)
+                    short_variant = "words_fallback"
             else:
-                tlds_for_block = pointer.tlds  # reuse same TLD set
                 batch = generate_word_batch(word_pointer, tlds_for_block, block_count)
                 short_variant = "words"
+
             # for logging clarity
             print(f"  short-mode variant: {short_variant}")
-            tlds_for_block = pointer.tlds
         else:
             tlds_for_block = pointer.tlds  # reuse the same TLD set
             batch = generate_word_batch(word_pointer, tlds_for_block, block_count)
@@ -749,7 +853,7 @@ def main() -> None:
     parser.add_argument("--print-each", action="store_true", help="Print each domain and its classification as it is processed")
     parser.add_argument("--reset-pointer", action="store_true", help="Reset pointer to the beginning and exit")
     parser.add_argument("--reset-db", action="store_true", help="Reset aggregated stats in the backend database and exit")
-    parser.add_argument("--short", action="store_true", help="Enable short label mode (1-6 characters from charset)")
+    parser.add_argument("--short", action="store_true", help="Enable short label mode (1-10 characters from charset)")
     parser.add_argument("--word", action="store_true", help="Enable word-based mode using words_10_all.txt")
     parser.add_argument("--pause", type=int, default=None, help="Optional pause in seconds between blocks when running continuously")
     parser.add_argument("--workers", type=int, default=None, help="Optional number of worker threads for DNS/HTTP checks (0 = single-threaded)")

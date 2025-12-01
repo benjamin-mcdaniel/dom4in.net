@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS length_stats (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   snap_date TEXT NOT NULL,
   tld TEXT NOT NULL, -- 'ALL' or a specific TLD like 'com'
-  length INTEGER NOT NULL, -- 1-6
+  length INTEGER NOT NULL, -- 1-10
   total_possible INTEGER NOT NULL,
   tracked_count INTEGER NOT NULL DEFAULT 0,
   unregistered_found INTEGER NOT NULL DEFAULT 0,
