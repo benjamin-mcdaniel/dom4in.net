@@ -1,6 +1,6 @@
 # dom4in.net
 
-dom4in.net is a domain market stats dashboard. It samples short domains (currently 1–10 character labels) across several major TLDs and shows **aggregated** data only (no per-domain lists), similar to a stock market overview.
+dom4in.net is a domain market stats dashboard. It samples short domains (currently 1–10 character labels) across several major TLDs and shows **aggregated** data only (no per-domain lists), similar to a stock market overview. For most large TLDs, essentially all 1–3 character labels are already registered; dom4in.net still measures how those spaces behave but never publishes individual domain names.
 
 This repo has three main parts:
 
@@ -109,7 +109,7 @@ Defined in `backend/db/schema.sql`:
   - `snap_date` (TEXT)
   - `tld` (TEXT, `'ALL'` for aggregates across TLDs)
   - `length` (INTEGER, 1–10)
-  - `total_possible` (INTEGER, e.g. `26^length` for labels a–z)
+  - `total_possible` (INTEGER, e.g. currently `26^length` for labels drawn from `a–z` in the collector model)
   - `tracked_count` – number of domain searches (label×TLD checks) in this length bucket
   - `unregistered_found` – currently surfaced in the UI as **"Parking Detected"**
   - `unused_found` – surfaced as **"Unused / No Website"**
@@ -339,4 +339,6 @@ Then frontend calls to `/api/...` from `dom4in.net` will be routed to the Worker
   - Restart-safe via a pointer file.
   - Configurable via `config.local.json` (API base, admin key, DNS resolvers, delay).
 - Only aggregated stats are stored in the cloud DB; per-domain raw data stays local.
-- `CHARSET` currently includes only `a–z`. Extending to digits or other characters will increase the search space and should be a deliberate change in `collector/collector.py`.
+- `CHARSET` currently includes only `a–z` in the collector, so `total_possible` is computed from that simple model. In the real domain ecosystem, short labels often mix letters and digits; throughout the UI, "length" always refers to the number of characters before the dot, regardless of whether they are letters or numbers. Extending the collector to digits or other characters will increase the search space and should be a deliberate change in `collector/collector.py`.
+
+WHOIS data for specific domains is operated by the individual TLD registries/registrars rather than ICANN itself; dom4in.net does not query WHOIS directly and only works with DNS/HTTP-derived aggregates.
