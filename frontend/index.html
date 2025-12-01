@@ -131,6 +131,21 @@
         <p style="margin-top: 0.5rem; font-size: 0.8rem; color: #9ca3af;">
           Below, we also summarize what fraction of the checked short domains appear unregistered (no DNS) or registered but unused/parked. These percentages are computed from the same aggregates and never expose individual domains. WHOIS and registration data for specific domains are operated by each TLD registry or registrar; ICANN coordinates the system but does not run a central public WHOIS service, and dom4in.net does not query WHOIS directly.
         </p>
+        <section id="api-overview" style="margin-top: 1.25rem; font-size: 0.8rem; color: #d1d5db;">
+          <h3 style="font-size: 0.85rem; margin-bottom: 0.35rem;">Stats API overview</h3>
+          <p style="color: #9ca3af; margin-bottom: 0.35rem;">
+            The aggregates on this page come from a single JSON endpoint:
+          </p>
+          <p style="margin-bottom: 0.35rem;">
+            <code style="font-size: 0.75rem;">GET /api/stats/overview</code>
+          </p>
+          <div>
+            <div style="font-weight: 600; margin-bottom: 0.2rem;">curl</div>
+            <pre style="background:#020617; border-radius:0.5rem; padding:0.5rem 0.75rem; border:1px solid #111827; font-size:0.7rem; overflow:auto;">
+curl https://dom4in.net/api/stats/overview
+            </pre>
+          </div>
+        </section>
       </section>
     </aside>
   </main>
