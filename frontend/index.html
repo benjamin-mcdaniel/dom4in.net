@@ -260,6 +260,9 @@ curl https://dom4in.net/api/stats/overview
         }
 
         statusEl.textContent = 'Stats loaded from backend API.';
+
+        // Now that word stats from the overview are available, render the word-based charts
+        loadWordStats();
       } catch (err) {
         console.error(err);
         statusEl.textContent = 'Failed to load stats. Backend may not be running yet.';
@@ -437,7 +440,6 @@ curl https://dom4in.net/api/stats/overview
     }
 
     loadOverview();
-    loadWordStats();
   </script>
 </body>
 </html>
