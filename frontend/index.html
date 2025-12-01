@@ -76,8 +76,8 @@
         <thead>
           <tr>
             <th>Length</th>
-            <th>Possible Labels (a–z)</th>
-            <th>Tracked (labels × TLDs)</th>
+            <th>Possible Labels (a–z, per length)</th>
+            <th>Tracked domain checks</th>
             <th>Unregistered (no DNS)</th>
             <th>Unused / Parked (registered)</th>
           </tr>
@@ -124,9 +124,9 @@
           dom4in.net samples the short-domain space and reports high-level aggregates only. For the major TLDs we look at, essentially all 1–3 character labels are already registered; this dashboard still samples those spaces but never lists individual domains, only aggregate behavior.
         </p>
         <p style="margin-top: 0.75rem; font-size: 0.8rem; color: #9ca3af;">
-          <strong>Possible Labels</strong> is the size of the short-name space at that length – how many simple strings exist before the dot, under the character set the collector is using (currently a–z). In practice, real short domains often mix letters and digits (e.g. <code>a1</code>, <code>4k</code>); the length charts should be read as "characters in the label before the dot" regardless of whether those characters are letters or numbers.
-          <strong>Tracked</strong> counts how many <em>domain searches</em> we have actually run so far, across a fixed set of TLDs
-          (<span id="tld-list">com, net, org, io, co</span>). Each label can be checked on several TLDs, so Tracked can be larger than Possible Labels, because it is counting <code>labels × TLDs</code>, not unique labels.
+          <strong>Possible Labels</strong> is the theoretical size of the short-name space at that length – how many simple a–z strings exist before the dot, under the character set the collector is using (currently a–z only). In practice, real short domains often mix letters and digits (e.g. <code>a1</code>, <code>4k</code>); the length charts should be read as "characters in the label before the dot" regardless of whether those characters are letters or numbers.
+          <strong>Tracked</strong> counts how many <em>domain checks</em> we have actually run so far for labels of that length across a fixed set of TLDs
+          (<span id="tld-list">com, net, org, io, co</span>). A given label may be checked on one TLD, several TLDs, or not yet checked at all, so Tracked is the number of domain-level checks performed, not a complete <code>labels × TLDs</code> grid.
         </p>
         <p style="margin-top: 0.5rem; font-size: 0.8rem; color: #9ca3af;">
           Below, we also summarize what fraction of the checked short domains appear unregistered (no DNS) or registered but unused/parked. These percentages are computed from the same aggregates and never expose individual domains. WHOIS and registration data for specific domains are operated by each TLD registry or registrar; ICANN coordinates the system but does not run a central public WHOIS service, and dom4in.net does not query WHOIS directly.
