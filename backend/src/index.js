@@ -25,6 +25,7 @@ export default {
             domains_tracked_lifetime: 0,
             domains_tracked_24h: 0,
             letter_length_counts: [],
+            word_pos_stats: [],
           };
           return new Response(JSON.stringify(emptyPayload), {
             headers: { "Content-Type": "application/json" },
@@ -48,11 +49,26 @@ export default {
           unused_found: row.unused_found,
         }));
 
+        const wordRows = await env.DB.prepare(
+          "SELECT pos, length, tracked_count, unregistered_found, unused_found FROM word_pos_stats WHERE snap_date = ? AND tld = ? ORDER BY pos, length"
+        )
+          .bind("overall", "ALL")
+          .all();
+
+        const word_pos_stats = (wordRows.results || []).map((row) => ({
+          pos: row.pos,
+          length: row.length,
+          tracked: row.tracked_count,
+          unregistered_found: row.unregistered_found,
+          unused_found: row.unused_found,
+        }));
+
         const payload = {
           domains_tracked_lifetime,
           domains_tracked_24h,
           last_updated_at: updated_at,
           letter_length_counts,
+          word_pos_stats,
         };
 
         return new Response(JSON.stringify(payload), {
