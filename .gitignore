@@ -14,3 +14,6 @@ collector/config.local.json
 
 # Local backend config (API keys, etc.)
 backend/.dev.vars
+
+# local db schema
+backend/.wrangler/state/v3/d1/*

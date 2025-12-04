@@ -586,6 +586,7 @@ def run(
     use_words: bool = False,
     block_pause_seconds: int = 0,
     workers: int = 0,
+    allowed_short_lengths=None,
 ) -> None:
     pointer = Pointer.load()
     word_pointer = WordPointer.load()
@@ -594,6 +595,16 @@ def run(
         word_pos_index = load_word_pos_index()
     except Exception:
         word_pos_index = {}
+
+    # Log short-length configuration for visibility
+    if allowed_short_lengths is not None:
+        try:
+            lengths_sorted = sorted(int(L) for L in allowed_short_lengths)
+        except Exception:
+            lengths_sorted = list(allowed_short_lengths)
+        print(f"Config: restricting short lengths to {lengths_sorted}")
+    else:
+        print(f"Config: short lengths = 1-{pointer.max_length} (no filter)")
 
     # Load DNS resolvers (from config if available, else defaults)
     config_resolvers = []
@@ -663,8 +674,10 @@ def run(
 
     # Alternate between short and words when both are enabled
     next_mode = "short" if use_short else "words"
+    block_index = 0
 
     while True:
+        block_index += 1
         # Start fresh aggregates for this block
         aggr = init_aggregates()
 
@@ -683,21 +696,29 @@ def run(
         if mode_for_block == "short":
             pointer.batch_size = block_count
             tlds_for_block = pointer.tlds
+            current_iter_length = None
 
             # 60/40 split between iterative and dictionary-based labels.
             if random.random() < 0.6:
-                # Iterative variant: pick a random unfinished length and advance its pointer.
+                # Iterative variant: pick a random unfinished length (optionally filtered).
                 length_states = pointer.length_states or {}
-                active_lengths = [
-                    L
-                    for L, st in length_states.items()
-                    if not st.get("done")
-                ]
+                candidate_lengths = []
 
-                if active_lengths:
-                    # Keys are strings; convert to ints for readability and randomness.
-                    length_for_block = int(random.choice(active_lengths))
-                    state = pointer.length_states[str(length_for_block)]
+                for key, st in length_states.items():
+                    if st.get("done"):
+                        continue
+                    try:
+                        L = int(key)
+                    except (TypeError, ValueError):
+                        continue
+                    if allowed_short_lengths is not None and L not in allowed_short_lengths:
+                        continue
+                    candidate_lengths.append(L)
+
+                if candidate_lengths:
+                    length_for_block = random.choice(candidate_lengths)
+                    current_iter_length = length_for_block
+                    state = length_states[str(length_for_block)]
                     batch = generate_batch_for_length(
                         state,
                         length_for_block,
@@ -707,25 +728,31 @@ def run(
                     )
                     short_variant = f"iter_len_{length_for_block}"
                 else:
-                    # All lengths exhausted for iterative labels; fall back to word-based short variant.
+                    # Either all lengths are exhausted or filtered out; fall back to word-based short variant.
                     batch = generate_word_batch(word_pointer, tlds_for_block, block_count)
                     short_variant = "words_fallback"
             else:
                 batch = generate_word_batch(word_pointer, tlds_for_block, block_count)
                 short_variant = "words"
-
-            # for logging clarity
-            print(f"  short-mode variant: {short_variant}")
         else:
             tlds_for_block = pointer.tlds  # reuse the same TLD set
             batch = generate_word_batch(word_pointer, tlds_for_block, block_count)
+            short_variant = "words_mode"
 
         if not batch:
+            print(f"----- Block {block_index} -----")
             print("No more domains to process within current configuration.")
             break
 
         batch_size_for_block = len(batch)
-        print(f"Starting block: {mode_for_block} - {batch_size_for_block} domains")
+        # Block header
+        header = f"----- Block {block_index} start: mode={mode_for_block}"
+        if mode_for_block == "short":
+            if short_variant.startswith("iter_len_") and current_iter_length is not None:
+                header += f", length={current_iter_length}"
+            else:
+                header += f", variant={short_variant}"
+        print(header + f", batch={batch_size_for_block} domains -----")
 
         def process_domain(domain: str, tld: str):
             label = domain.split(".")[0]
@@ -768,7 +795,13 @@ def run(
                             f"product={http_info.get('product_state')}"
                         )
 
-                    track_lengths = mode_for_block == "short"
+                    track_lengths = (
+                        mode_for_block == "short"
+                        and (
+                            allowed_short_lengths is None
+                            or length in allowed_short_lengths
+                        )
+                    )
                     pos_label = ""
                     if mode_for_block == "words" and word_pos_index:
                         pos_label = word_pos_index.get(label, "")
@@ -794,7 +827,13 @@ def run(
                         f"product={http_info.get('product_state')}"
                     )
 
-                track_lengths = mode_for_block == "short"
+                track_lengths = (
+                    mode_for_block == "short"
+                    and (
+                        allowed_short_lengths is None
+                        or length in allowed_short_lengths
+                    )
+                )
                 pos_label = ""
                 if mode_for_block == "words" and word_pos_index:
                     pos_label = word_pos_index.get(label, "")
@@ -819,21 +858,29 @@ def run(
 
         length_stats_list = payload.get("length_stats", [])
         total_tracked_block = sum(ls.get("tracked_count", 0) for ls in length_stats_list)
+        # Build a compact per-length breakdown for logging (e.g. L7=54, L8=12)
+        length_breakdown_parts = []
+        for ls in length_stats_list:
+            length_val = ls.get("length")
+            tracked_val = ls.get("tracked_count", 0)
+            if tracked_val:
+                length_breakdown_parts.append(f"L{length_val}={tracked_val}")
+        length_breakdown = ", ".join(length_breakdown_parts) if length_breakdown_parts else "none"
         status_code, body_text = upload_aggregate(api_base, api_key, payload, dry_run=dry_run)
 
         # Simple console summary for the block
         if mode_for_block == "short":
             # Short-mode batches contribute to length_stats (1–10 character view).
             print(
-                f"short - {total_tracked_block} domains updated in length_stats "
-                f"(out of {batch_size_for_block} processed) - {status_code} {body_text}"
+                f"----- Block {block_index} done (short): length_stats_domains={total_tracked_block} "
+                f"from {batch_size_for_block} domains, status={status_code}, lengths: {length_breakdown} -----"
             )
         else:
             # Word-mode batches only affect global/tld aggregates (and future word_pos_stats),
             # so length_stats rows remain unchanged for these blocks.
             print(
-                f"words - {batch_size_for_block} domains processed "
-                f"(0 length_stats rows updated) - {status_code} {body_text}"
+                f"----- Block {block_index} done (words): {batch_size_for_block} domains processed, "
+                f"length_stats_domains=0, status={status_code} -----"
             )
 
         # Save pointers so progress is kept
@@ -857,20 +904,40 @@ def main() -> None:
     parser.add_argument("--word", action="store_true", help="Enable word-based mode using words_10_all.txt")
     parser.add_argument("--pause", type=int, default=None, help="Optional pause in seconds between blocks when running continuously")
     parser.add_argument("--workers", type=int, default=None, help="Optional number of worker threads for DNS/HTTP checks (0 = single-threaded)")
+    parser.add_argument("--config-file", type=str, default=None, help="Optional path to a JSON config file (overrides default collector/config.local.json)")
+    parser.add_argument("--uselocals", action="store_true", help="Use short_lengths and related tuning from the loaded local config")
 
     args = parser.parse_args()
 
-    # Load defaults from local config file if present
+    # Load defaults from a config file if present (CLI flag overrides default path)
     config = {}
-    if os.path.exists(CONFIG_FILE):
+    config_path = args.config_file or CONFIG_FILE
+    if config_path and os.path.exists(config_path):
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
         except Exception as e:
-            print(f"Warning: failed to read config from {CONFIG_FILE}: {e}")
+            print(f"Warning: failed to read config from {config_path}: {e}")
 
     api_base = args.api_base or config.get("api_base", "https://dom4in.net")
     api_key = args.api_key or config.get("admin_api_key", "")
+
+    # Optional: restrict which short lengths are eligible (e.g. [7, 8, 9, 10])
+    # Only apply this when --uselocals is explicitly set, so normal runs ignore short_lengths.
+    allowed_short_lengths = None
+    if args.uselocals:
+        short_lengths_cfg = config.get("short_lengths")
+        if isinstance(short_lengths_cfg, list):
+            lengths = []
+            for value in short_lengths_cfg:
+                try:
+                    L = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= L <= MAX_LENGTH:
+                    lengths.append(L)
+            if lengths:
+                allowed_short_lengths = set(lengths)
     cfg_block_pause = int(config.get("block_pause_seconds", 0)) if config else 0
     cfg_workers = int(config.get("worker_count", 0)) if config else 0
     if args.pause is not None:
@@ -910,6 +977,7 @@ def main() -> None:
         use_words=args.word,
         block_pause_seconds=block_pause_seconds,
         workers=workers,
+        allowed_short_lengths=allowed_short_lengths,
     )
 
 
