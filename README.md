@@ -176,40 +176,40 @@ Dictionary file (gitignored):
 
 ```mermaid
 flowchart TD
-    A[Start collector.py] --> B[Load config.local.json]
-    B --> C[Determine modes: --short / --word flags]
-    C --> D[Load Pointer (short, length_states 1-10)]
-    C --> E[Load WordPointer (dictionary index)]
+    A[Start collector] --> B[Load config file]
+    B --> C[Decide modes short or word]
+    C --> D[Load short pointer state]
+    C --> E[Load word pointer state]
 
-    D --> F[Loop: pick next block (size 25-80)]
+    D --> F[Pick next block size]
     E --> F
 
-    F --> G{mode_for_block}
+    F --> G{Block mode}
 
     G -->|short| H[Short block]
-    G -->|words| W[Words block]
+    G -->|word| W[Word block]
 
-    H --> H1{Variant}
-    H1 -->|60% iterative| H2[Pick unfinished length from length_states (filtered by allowed_short_lengths if set)]
-    H1 -->|40% words| H3[Generate word-based short labels]
+    H --> H1{Short variant}
+    H1 -->|iterative| H2[Iterate short labels for chosen length]
+    H1 -->|words| H3[Use dictionary words as short labels]
 
-    H2 --> I[Generate batch for chosen length and TLDs]
+    H2 --> I[Build short batch]
     H3 --> I
 
-    W --> J[Generate word batch from dictionary]
+    W --> J[Build word batch]
 
-    I --> K[Process domains (DNS+HTTP)]
+    I --> K[Check DNS and HTTP]
     J --> K
 
-    K --> L{Block mode}
-    L -->|short| M[Update aggregates: global_stats, length_stats (only if length allowed), tld_stats]
-    L -->|words| N[Update aggregates: global_stats, word_pos_stats, tld_stats; length_stats disabled]
+    K --> L{Update stats}
+    L -->|short| M[Update global and length stats]
+    L -->|word| N[Update global and word stats]
 
-    M --> O[Build payload and POST /api/admin/upload-aggregate]
+    M --> O[Send block to backend]
     N --> O
 
-    O --> P[Save Pointer and WordPointer]
-    P --> Q{More work?}
+    O --> P[Save pointers]
+    P --> Q{More work}
     Q -->|yes| F
     Q -->|no| R[Stop]
 ```
