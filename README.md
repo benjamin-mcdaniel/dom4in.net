@@ -177,14 +177,11 @@ Dictionary file (gitignored):
 ```mermaid
 flowchart TD
     A[Start collector.py] --> B[Load config.local.json]
-    B --> C[Determine modes<br/>--short / --word flags]
-    C --> D[Load Pointer (short)
-length_states 1-10]
-    C --> E[Load WordPointer
-dictionary index]
+    B --> C[Determine modes: --short / --word flags]
+    C --> D[Load Pointer (short, length_states 1-10)]
+    C --> E[Load WordPointer (dictionary index)]
 
-    D --> F[Loop: pick next block
-size 25-80]
+    D --> F[Loop: pick next block (size 25-80)]
     E --> F
 
     F --> G{mode_for_block}
@@ -193,43 +190,25 @@ size 25-80]
     G -->|words| W[Words block]
 
     H --> H1{Variant}
-    H1 -->|60% iterative| H2[Pick unfinished length
-from length_states
-optionally filtered by
-allowed_short_lengths]
-    H1 -->|40% words| H3[Generate word-based
-short labels]
+    H1 -->|60% iterative| H2[Pick unfinished length from length_states (filtered by allowed_short_lengths if set)]
+    H1 -->|40% words| H3[Generate word-based short labels]
 
-    H2 --> I[Generate batch for
-chosen length & TLDs]
+    H2 --> I[Generate batch for chosen length and TLDs]
     H3 --> I
 
-    W --> J[Generate word batch
-from dictionary]
+    W --> J[Generate word batch from dictionary]
 
-    I --> K[Process domains
-DNS+HTTP]
+    I --> K[Process domains (DNS+HTTP)]
     J --> K
 
     K --> L{Block mode}
-    L -->|short| M[Update aggregates
-global_stats
-length_stats (only if
-length in allowed_short_lengths
-when filter active)
-tld_stats]
-    L -->|words| N[Update aggregates
-global_stats
-word_pos_stats
-tld_stats
-length_stats disabled]
+    L -->|short| M[Update aggregates: global_stats, length_stats (only if length allowed), tld_stats]
+    L -->|words| N[Update aggregates: global_stats, word_pos_stats, tld_stats; length_stats disabled]
 
-    M --> O[Build payload &
-POST /api/admin/upload-aggregate]
+    M --> O[Build payload and POST /api/admin/upload-aggregate]
     N --> O
 
-    O --> P[Save Pointer &
-WordPointer]
+    O --> P[Save Pointer and WordPointer]
     P --> Q{More work?}
     Q -->|yes| F
     Q -->|no| R[Stop]
