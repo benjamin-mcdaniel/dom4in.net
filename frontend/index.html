@@ -104,10 +104,11 @@
         <h2>Per-TLD short-domain comparison</h2>
         <p style="color: #9ca3af; margin-top: 0.25rem;">
           This view compares how often short labels (1–10 characters) appear unregistered across each tracked TLD.
-          For each length, we show one colored bar per TLD, sized by the share of unregistered results among checked
-          domains for that TLD and length.
+          The chart below shows one colored line per TLD; the x-axis is label length, and the y-axis is the share of
+          unregistered results among checked domains for that TLD and length.
         </p>
-        <div id="tld-length-charts" class="length-chart-grid"></div>
+        <div id="tld-length-chart" style="margin-top: 0.75rem;"></div>
+        <div id="tld-length-legend" style="margin-top: 0.5rem; font-size: 0.75rem; color: #9ca3af;"></div>
         <div id="tld-length-status" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
       </section>
       <div id="last-updated" style="margin-top: 0.75rem;"></div>
@@ -184,11 +185,13 @@ curl https://dom4in.net/api/stats/overview
 
         const tbody = document.getElementById('length-table-body');
         const chartsEl = document.getElementById('length-charts');
-        const tldChartsEl = document.getElementById('tld-length-charts');
+        const tldChartEl = document.getElementById('tld-length-chart');
+        const tldLegendEl = document.getElementById('tld-length-legend');
         const tldStatusEl = document.getElementById('tld-length-status');
         tbody.innerHTML = '';
         chartsEl.innerHTML = '';
-        if (tldChartsEl) tldChartsEl.innerHTML = '';
+        if (tldChartEl) tldChartEl.innerHTML = '';
+        if (tldLegendEl) tldLegendEl.innerHTML = '';
         if (tldStatusEl) tldStatusEl.textContent = '';
         const lengthRows = data.letter_length_counts || [];
         const tldLengthRows = data.tld_length_counts || [];
@@ -256,84 +259,194 @@ curl https://dom4in.net/api/stats/overview
           }
         });
 
-        // Per-TLD comparison chart
-        if (tldChartsEl && tldStatusEl) {
+        // Per-TLD comparison chart (multi-line SVG)
+        if (tldChartEl && tldLegendEl && tldStatusEl) {
           if (!tldLengthRows.length) {
             tldStatusEl.textContent = 'Per-TLD length stats are not available yet.';
           } else {
-            // Group by length, then by TLD
-            const byLength = {};
+            const byTld = {};
             tldLengthRows.forEach(row => {
-              const L = row.length;
-              if (!byLength[L]) byLength[L] = {};
-              byLength[L][row.tld] = row;
+              const tld = row.tld;
+              if (!byTld[tld]) byTld[tld] = [];
+              const tracked = row.tracked || 0;
+              const unreg = row.unregistered_found || 0;
+              const pct = tracked > 0 ? (unreg / tracked) * 100 : 0;
+              byTld[tld].push({ length: row.length, pct, tracked, unreg });
             });
 
-            const allTlds = Array.from(
-              new Set(tldLengthRows.map(r => r.tld))
-            ).sort();
+            const allTlds = Object.keys(byTld).sort();
+            // Normalize series to lengths 1-10
+            allTlds.forEach(tld => {
+              const map = {};
+              byTld[tld].forEach(p => { map[p.length] = p; });
+              const series = [];
+              for (let L = 1; L <= 10; L++) {
+                const v = map[L] || { length: L, pct: 0, tracked: 0, unreg: 0 };
+                series.push(v);
+              }
+              byTld[tld] = series;
+            });
 
-            // Assign simple colors per TLD
+            // Determine max pct for y-scale
+            let maxPct = 0;
+            allTlds.forEach(tld => {
+              byTld[tld].forEach(p => {
+                if (p.pct > maxPct) maxPct = p.pct;
+              });
+            });
+            if (maxPct <= 0) maxPct = 1;
+
+            const width = 500;
+            const height = 220;
+            const marginLeft = 32;
+            const marginRight = 12;
+            const marginTop = 10;
+            const marginBottom = 24;
+            const plotWidth = width - marginLeft - marginRight;
+            const plotHeight = height - marginTop - marginBottom;
+
+            const xScale = L => marginLeft + ((L - 1) / 9) * plotWidth;
+            const yScale = pct => marginTop + plotHeight * (1 - pct / maxPct);
+
+            const svgNS = 'http://www.w3.org/2000/svg';
+            const svg = document.createElementNS(svgNS, 'svg');
+            svg.setAttribute('width', width.toString());
+            svg.setAttribute('height', height.toString());
+            svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+
+            // Axes
+            const axisColor = '#4b5563';
+            const gridColor = '#111827';
+
+            // Y-axis line
+            const yAxis = document.createElementNS(svgNS, 'line');
+            yAxis.setAttribute('x1', marginLeft.toString());
+            yAxis.setAttribute('y1', marginTop.toString());
+            yAxis.setAttribute('x2', marginLeft.toString());
+            yAxis.setAttribute('y2', (marginTop + plotHeight).toString());
+            yAxis.setAttribute('stroke', axisColor);
+            yAxis.setAttribute('stroke-width', '1');
+            svg.appendChild(yAxis);
+
+            // X-axis line
+            const xAxis = document.createElementNS(svgNS, 'line');
+            xAxis.setAttribute('x1', marginLeft.toString());
+            xAxis.setAttribute('y1', (marginTop + plotHeight).toString());
+            xAxis.setAttribute('x2', (marginLeft + plotWidth).toString());
+            xAxis.setAttribute('y2', (marginTop + plotHeight).toString());
+            xAxis.setAttribute('stroke', axisColor);
+            xAxis.setAttribute('stroke-width', '1');
+            svg.appendChild(xAxis);
+
+            // Horizontal grid + y labels (0%, ~max%)
+            const yTicks = [0, maxPct];
+            yTicks.forEach(p => {
+              const y = yScale(p);
+              const grid = document.createElementNS(svgNS, 'line');
+              grid.setAttribute('x1', marginLeft.toString());
+              grid.setAttribute('y1', y.toString());
+              grid.setAttribute('x2', (marginLeft + plotWidth).toString());
+              grid.setAttribute('y2', y.toString());
+              grid.setAttribute('stroke', gridColor);
+              grid.setAttribute('stroke-width', '0.5');
+              grid.setAttribute('stroke-dasharray', '2,2');
+              svg.appendChild(grid);
+
+              const label = document.createElementNS(svgNS, 'text');
+              label.setAttribute('x', (marginLeft - 4).toString());
+              label.setAttribute('y', (y + 3).toString());
+              label.setAttribute('text-anchor', 'end');
+              label.setAttribute('font-size', '9');
+              label.setAttribute('fill', '#9ca3af');
+              label.textContent = `${p.toFixed(0)}%`;
+              svg.appendChild(label);
+            });
+
+            // X-axis ticks (length 1-10)
+            for (let L = 1; L <= 10; L++) {
+              const x = xScale(L);
+              const tick = document.createElementNS(svgNS, 'line');
+              tick.setAttribute('x1', x.toString());
+              tick.setAttribute('y1', (marginTop + plotHeight).toString());
+              tick.setAttribute('x2', x.toString());
+              tick.setAttribute('y2', (marginTop + plotHeight + 4).toString());
+              tick.setAttribute('stroke', axisColor);
+              tick.setAttribute('stroke-width', '1');
+              svg.appendChild(tick);
+
+              const label = document.createElementNS(svgNS, 'text');
+              label.setAttribute('x', x.toString());
+              label.setAttribute('y', (marginTop + plotHeight + 14).toString());
+              label.setAttribute('text-anchor', 'middle');
+              label.setAttribute('font-size', '9');
+              label.setAttribute('fill', '#9ca3af');
+              label.textContent = String(L);
+              svg.appendChild(label);
+            }
+
+            // Colors per TLD
             const colorPalette = ['#60a5fa', '#f97316', '#a855f7', '#22c55e', '#e11d48', '#facc15'];
             const tldColors = {};
             allTlds.forEach((tld, idx) => {
               tldColors[tld] = colorPalette[idx % colorPalette.length];
             });
 
-            Object.keys(byLength).sort((a, b) => Number(a) - Number(b)).forEach(lenKey => {
-              const lenVal = Number(lenKey);
-              const rowByTld = byLength[lenKey];
-              const rowEl = document.createElement('div');
-              rowEl.className = 'length-chart-row';
-
-              const labelEl = document.createElement('div');
-              labelEl.className = 'length-chart-label';
-              labelEl.textContent = lenVal;
-              rowEl.appendChild(labelEl);
-
-              const barWrapper = document.createElement('div');
-              barWrapper.style.display = 'flex';
-              barWrapper.style.gap = '4px';
-              barWrapper.style.flex = '1';
-
-              allTlds.forEach(tld => {
-                const stats = rowByTld[tld];
-                const tracked = stats ? (stats.tracked || 0) : 0;
-                const unreg = stats ? (stats.unregistered_found || 0) : 0;
-                const pct = tracked > 0 ? (unreg / tracked) * 100 : 0;
-
-                const bar = document.createElement('div');
-                bar.style.flex = '1';
-                bar.style.height = '0.6rem';
-                bar.style.borderRadius = '999px';
-                bar.style.background = '#020617';
-                bar.style.border = '1px solid #111827';
-                bar.title = `${tld}: ${pct.toFixed(1)}% unregistered (${unreg.toLocaleString()} of ${tracked.toLocaleString()})`;
-
-                const inner = document.createElement('div');
-                inner.style.height = '100%';
-                inner.style.width = pct.toFixed(2) + '%';
-                inner.style.background = tldColors[tld];
-                inner.style.borderRadius = '999px';
-                bar.appendChild(inner);
-
-                barWrapper.appendChild(bar);
+            // Draw lines per TLD
+            allTlds.forEach(tld => {
+              const series = byTld[tld];
+              let d = '';
+              series.forEach((pt, idx) => {
+                const x = xScale(pt.length);
+                const y = yScale(pt.pct);
+                d += (idx === 0 ? 'M' : 'L') + x + ' ' + y + ' ';
               });
 
-              rowEl.appendChild(barWrapper);
+              const path = document.createElementNS(svgNS, 'path');
+              path.setAttribute('d', d.trim());
+              path.setAttribute('fill', 'none');
+              path.setAttribute('stroke', tldColors[tld]);
+              path.setAttribute('stroke-width', '2');
+              svg.appendChild(path);
 
-              // Right-hand label listing TLDs
-              const pctLabel = document.createElement('div');
-              pctLabel.style.minWidth = '10rem';
-              pctLabel.style.textAlign = 'right';
-              pctLabel.style.fontSize = '0.75rem';
-              pctLabel.textContent = allTlds.join(', ');
-              rowEl.appendChild(pctLabel);
-
-              tldChartsEl.appendChild(rowEl);
+              // Add small circles at each point for visibility
+              series.forEach(pt => {
+                const cx = xScale(pt.length);
+                const cy = yScale(pt.pct);
+                const circ = document.createElementNS(svgNS, 'circle');
+                circ.setAttribute('cx', cx.toString());
+                circ.setAttribute('cy', cy.toString());
+                circ.setAttribute('r', '2');
+                circ.setAttribute('fill', tldColors[tld]);
+                svg.appendChild(circ);
+              });
             });
 
-            tldStatusEl.textContent = 'Per-TLD comparison based on unregistered share at each length.';
+            tldChartEl.appendChild(svg);
+
+            // Legend
+            allTlds.forEach(tld => {
+              const item = document.createElement('span');
+              item.style.display = 'inline-flex';
+              item.style.alignItems = 'center';
+              item.style.marginRight = '0.75rem';
+
+              const swatch = document.createElement('span');
+              swatch.style.display = 'inline-block';
+              swatch.style.width = '0.7rem';
+              swatch.style.height = '0.7rem';
+              swatch.style.borderRadius = '999px';
+              swatch.style.background = tldColors[tld];
+              swatch.style.marginRight = '0.25rem';
+
+              const label = document.createElement('span');
+              label.textContent = tld;
+
+              item.appendChild(swatch);
+              item.appendChild(label);
+              tldLegendEl.appendChild(item);
+            });
+
+            tldStatusEl.textContent = 'Lines show the share of unregistered results by length for each TLD.';
           }
         }
 
