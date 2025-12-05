@@ -76,7 +76,7 @@
         <thead>
           <tr>
             <th>Length</th>
-            <th>Possible Labels (a–z, per length)</th>
+            <th>Possible labels (a–z, 0–9 per length)</th>
             <th>Tracked domain checks</th>
             <th>Unregistered (no DNS)</th>
             <th>Unused / Parked (registered)</th>
@@ -99,6 +99,16 @@
         <div id="word-overall" style="margin-top: 0.75rem;"></div>
         <div id="word-summary" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
         <div id="word-status" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
+      </section>
+      <section id="tld-length-compare" style="margin-top: 2rem; font-size: 0.85rem; color: #d1d5db;">
+        <h2>Per-TLD short-domain comparison</h2>
+        <p style="color: #9ca3af; margin-top: 0.25rem;">
+          This view compares how often short labels (1–10 characters) appear unregistered across each tracked TLD.
+          For each length, we show one colored bar per TLD, sized by the share of unregistered results among checked
+          domains for that TLD and length.
+        </p>
+        <div id="tld-length-charts" class="length-chart-grid"></div>
+        <div id="tld-length-status" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
       </section>
       <div id="last-updated" style="margin-top: 0.75rem;"></div>
     </section>
@@ -124,7 +134,7 @@
           dom4in.net samples the short-domain space and reports high-level aggregates only. For the major TLDs we look at, essentially all 1–3 character labels are already registered; this dashboard still samples those spaces but never lists individual domains, only aggregate behavior.
         </p>
         <p style="margin-top: 0.75rem; font-size: 0.8rem; color: #9ca3af;">
-          <strong>Possible Labels</strong> is the theoretical size of the short-name space at that length – how many simple a–z strings exist before the dot, under the character set the collector is using (currently a–z only). In practice, real short domains often mix letters and digits (e.g. <code>a1</code>, <code>4k</code>); the length charts should be read as "characters in the label before the dot" regardless of whether those characters are letters or numbers.
+          <strong>Possible Labels</strong> is the theoretical size of the short-name space at that length – how many simple strings exist before the dot, under the character set the collector is using (currently letters <code>a–z</code> and digits <code>0–9</code>, 36 options per character). In practice, real short domains may also contain other symbols such as hyphens; the length charts should be read as "characters in the label before the dot" regardless of whether those characters are letters or numbers.
           <strong>Tracked</strong> counts how many <em>domain checks</em> we have actually run so far for labels of that length across a fixed set of TLDs
           (<span id="tld-list">com, net, org, io, co</span>). A given label may be checked on one TLD, several TLDs, or not yet checked at all, so Tracked is the number of domain-level checks performed, not a complete <code>labels × TLDs</code> grid.
         </p>
@@ -174,9 +184,14 @@ curl https://dom4in.net/api/stats/overview
 
         const tbody = document.getElementById('length-table-body');
         const chartsEl = document.getElementById('length-charts');
+        const tldChartsEl = document.getElementById('tld-length-charts');
+        const tldStatusEl = document.getElementById('tld-length-status');
         tbody.innerHTML = '';
         chartsEl.innerHTML = '';
+        if (tldChartsEl) tldChartsEl.innerHTML = '';
+        if (tldStatusEl) tldStatusEl.textContent = '';
         const lengthRows = data.letter_length_counts || [];
+        const tldLengthRows = data.tld_length_counts || [];
         // Stash word stats from the overview payload so the word loader can reuse them
         window.__overviewWordStats = data.word_pos_stats || [];
         let sumTracked = 0;
@@ -240,6 +255,87 @@ curl https://dom4in.net/api/stats/overview
             chartsEl.appendChild(rowEl);
           }
         });
+
+        // Per-TLD comparison chart
+        if (tldChartsEl && tldStatusEl) {
+          if (!tldLengthRows.length) {
+            tldStatusEl.textContent = 'Per-TLD length stats are not available yet.';
+          } else {
+            // Group by length, then by TLD
+            const byLength = {};
+            tldLengthRows.forEach(row => {
+              const L = row.length;
+              if (!byLength[L]) byLength[L] = {};
+              byLength[L][row.tld] = row;
+            });
+
+            const allTlds = Array.from(
+              new Set(tldLengthRows.map(r => r.tld))
+            ).sort();
+
+            // Assign simple colors per TLD
+            const colorPalette = ['#60a5fa', '#f97316', '#a855f7', '#22c55e', '#e11d48', '#facc15'];
+            const tldColors = {};
+            allTlds.forEach((tld, idx) => {
+              tldColors[tld] = colorPalette[idx % colorPalette.length];
+            });
+
+            Object.keys(byLength).sort((a, b) => Number(a) - Number(b)).forEach(lenKey => {
+              const lenVal = Number(lenKey);
+              const rowByTld = byLength[lenKey];
+              const rowEl = document.createElement('div');
+              rowEl.className = 'length-chart-row';
+
+              const labelEl = document.createElement('div');
+              labelEl.className = 'length-chart-label';
+              labelEl.textContent = lenVal;
+              rowEl.appendChild(labelEl);
+
+              const barWrapper = document.createElement('div');
+              barWrapper.style.display = 'flex';
+              barWrapper.style.gap = '4px';
+              barWrapper.style.flex = '1';
+
+              allTlds.forEach(tld => {
+                const stats = rowByTld[tld];
+                const tracked = stats ? (stats.tracked || 0) : 0;
+                const unreg = stats ? (stats.unregistered_found || 0) : 0;
+                const pct = tracked > 0 ? (unreg / tracked) * 100 : 0;
+
+                const bar = document.createElement('div');
+                bar.style.flex = '1';
+                bar.style.height = '0.6rem';
+                bar.style.borderRadius = '999px';
+                bar.style.background = '#020617';
+                bar.style.border = '1px solid #111827';
+                bar.title = `${tld}: ${pct.toFixed(1)}% unregistered (${unreg.toLocaleString()} of ${tracked.toLocaleString()})`;
+
+                const inner = document.createElement('div');
+                inner.style.height = '100%';
+                inner.style.width = pct.toFixed(2) + '%';
+                inner.style.background = tldColors[tld];
+                inner.style.borderRadius = '999px';
+                bar.appendChild(inner);
+
+                barWrapper.appendChild(bar);
+              });
+
+              rowEl.appendChild(barWrapper);
+
+              // Right-hand label listing TLDs
+              const pctLabel = document.createElement('div');
+              pctLabel.style.minWidth = '10rem';
+              pctLabel.style.textAlign = 'right';
+              pctLabel.style.fontSize = '0.75rem';
+              pctLabel.textContent = allTlds.join(', ');
+              rowEl.appendChild(pctLabel);
+
+              tldChartsEl.appendChild(rowEl);
+            });
+
+            tldStatusEl.textContent = 'Per-TLD comparison based on unregistered share at each length.';
+          }
+        }
 
         const summaryEl = document.getElementById('derived-summary');
         if (lengthRows.length && sumTracked > 0) {

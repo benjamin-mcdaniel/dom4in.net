@@ -49,6 +49,22 @@ export default {
           unused_found: row.unused_found,
         }));
 
+        // Per-TLD length stats (for visualization by TLD)
+        const tldLengthRows = await env.DB.prepare(
+          "SELECT tld, length, total_possible, tracked_count, unregistered_found, unused_found FROM length_stats WHERE snap_date = ? AND tld != ? ORDER BY tld, length ASC"
+        )
+          .bind("overall", "ALL")
+          .all();
+
+        const tld_length_counts = (tldLengthRows.results || []).map((row) => ({
+          tld: row.tld,
+          length: row.length,
+          total_possible: row.total_possible,
+          tracked: row.tracked_count,
+          unregistered_found: row.unregistered_found,
+          unused_found: row.unused_found,
+        }));
+
         const wordRows = await env.DB.prepare(
           "SELECT pos, length, tracked_count, unregistered_found, unused_found FROM word_pos_stats WHERE snap_date = ? AND tld = ? ORDER BY pos, length"
         )
@@ -68,6 +84,7 @@ export default {
           domains_tracked_24h,
           last_updated_at: updated_at,
           letter_length_counts,
+          tld_length_counts,
           word_pos_stats,
         };
 
@@ -101,7 +118,7 @@ export default {
         });
       }
 
-      const { date, global, length_stats, word_pos_stats } = body || {};
+      const { date, global, length_stats, length_stats_by_tld, word_pos_stats } = body || {};
       if (!date || !global || !Array.isArray(length_stats)) {
         return new Response(JSON.stringify({ error: "invalid_payload" }), {
           status: 400,
@@ -143,6 +160,32 @@ export default {
               row.unused_found || 0
             )
             .run();
+        }
+
+        // Optional per-TLD length stats: cumulative lifetime per (snap_date, tld, length)
+        if (Array.isArray(length_stats_by_tld)) {
+          for (const row of length_stats_by_tld) {
+            await env.DB.prepare(
+              "INSERT INTO length_stats (snap_date, tld, length, total_possible, tracked_count, unregistered_found, unused_found) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+                "ON CONFLICT(snap_date, tld, length) DO UPDATE SET " +
+                "total_possible = excluded.total_possible, " +
+                "tracked_count = length_stats.tracked_count + excluded.tracked_count, " +
+                "unregistered_found = length_stats.unregistered_found + excluded.unregistered_found, " +
+                "unused_found = length_stats.unused_found + excluded.unused_found, " +
+                "updated_at = datetime('now')"
+            )
+              .bind(
+                "overall",
+                row.tld,
+                row.length,
+                row.total_possible,
+                row.tracked_count || 0,
+                row.unregistered_found || 0,
+                row.unused_found || 0
+              )
+              .run();
+          }
         }
 
         // Optional word POS stats: cumulative lifetime under snap_date = 'overall'

@@ -27,7 +27,7 @@ WORDS_ADVERBS_PATH = os.path.join(WORDS_DIR, "words_10_adverbs.txt")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.local.json")
 
 
-CHARSET = "abcdefghijklmnopqrstuvwxyz"
+CHARSET = "abcdefghijklmnopqrstuvwxyz0123456789"
 MAX_LENGTH = 10
 
 # Default DNS-over-HTTPS resolvers (you can override these in config.local.json)
@@ -406,7 +406,8 @@ def init_aggregates() -> Dict:
             "domains_tracked_lifetime": 0,
             "domains_tracked_24h": 0,
         },
-        "length_stats": {},  # key: length -> counters
+        "length_stats": {},  # key: length -> counters (ALL TLDs)
+        "length_stats_by_tld": {},  # key: (tld, length) -> counters
         "tld_stats": {},     # key: tld -> counters (for future use)
         "word_pos_stats": {},  # key: (pos, length) -> counters
     }
@@ -427,6 +428,7 @@ def update_aggregates(
     g["domains_tracked_24h"] += 1
 
     if track_length_stats:
+        # Overall (ALL TLDs) length bucket
         ls = aggr["length_stats"].setdefault(length, {
             "length": length,
             "total_possible": len(CHARSET) ** length,
@@ -443,6 +445,26 @@ def update_aggregates(
             usage_state = http_info.get("usage_state")
             if usage_state in {"no_website", "parked_or_placeholder"}:
                 ls["unused_found"] += 1
+
+        # Per-TLD length bucket
+        key_tld = (tld, length)
+        lts = aggr["length_stats_by_tld"].setdefault(key_tld, {
+            "tld": tld,
+            "length": length,
+            "total_possible": len(CHARSET) ** length,
+            "tracked_count": 0,
+            "unregistered_found": 0,
+            "unused_found": 0,
+        })
+
+        lts["tracked_count"] += 1
+
+        if not dns_info.get("registered"):
+            lts["unregistered_found"] += 1
+        else:
+            usage_state = http_info.get("usage_state")
+            if usage_state in {"no_website", "parked_or_placeholder"}:
+                lts["unused_found"] += 1
 
     ts = aggr["tld_stats"].setdefault(tld, {
         "tld": tld,
@@ -487,6 +509,10 @@ def update_aggregates(
 
 def build_payload(date_str: str, aggr: Dict) -> Dict:
     length_stats_list = sorted(aggr["length_stats"].values(), key=lambda x: x["length"])
+    length_stats_by_tld_list = sorted(
+        aggr["length_stats_by_tld"].values(),
+        key=lambda x: (x["tld"], x["length"]),
+    )
     word_pos_stats_list = sorted(
         aggr["word_pos_stats"].values(),
         key=lambda x: (x["pos"], x["length"]),
@@ -497,6 +523,7 @@ def build_payload(date_str: str, aggr: Dict) -> Dict:
         "date": date_str,
         "global": aggr["global"],
         "length_stats": length_stats_list,
+        "length_stats_by_tld": length_stats_by_tld_list,
         "word_pos_stats": word_pos_stats_list,
     }
 
@@ -586,7 +613,6 @@ def run(
     use_words: bool = False,
     block_pause_seconds: int = 0,
     workers: int = 0,
-    allowed_short_lengths=None,
 ) -> None:
     pointer = Pointer.load()
     word_pointer = WordPointer.load()
@@ -595,16 +621,6 @@ def run(
         word_pos_index = load_word_pos_index()
     except Exception:
         word_pos_index = {}
-
-    # Log short-length configuration for visibility
-    if allowed_short_lengths is not None:
-        try:
-            lengths_sorted = sorted(int(L) for L in allowed_short_lengths)
-        except Exception:
-            lengths_sorted = list(allowed_short_lengths)
-        print(f"Config: restricting short lengths to {lengths_sorted}")
-    else:
-        print(f"Config: short lengths = 1-{pointer.max_length} (no filter)")
 
     # Load DNS resolvers (from config if available, else defaults)
     config_resolvers = []
@@ -675,6 +691,8 @@ def run(
     # Alternate between short and words when both are enabled
     next_mode = "short" if use_short else "words"
     block_index = 0
+    # Round-robin index for choosing lengths in short mode
+    next_length_rr_index = 0
 
     while True:
         block_index += 1
@@ -691,49 +709,43 @@ def run(
         elif mode_for_block == "words" and not use_words and use_short:
             mode_for_block = "short"
 
-        # Short blocks: 60% iterative charset labels, 40% dictionary words (both counted in length_stats).
-        # Word blocks: dictionary/POS-only, reserved for future word_pos_stats (do not affect length_stats).
+        # Short blocks: iterative charset labels only, counted in length_stats.
+        # Word blocks: dictionary/POS-only, reserved for word_pos_stats (do not affect length_stats).
         if mode_for_block == "short":
             pointer.batch_size = block_count
             tlds_for_block = pointer.tlds
             current_iter_length = None
 
-            # 60/40 split between iterative and dictionary-based labels.
-            if random.random() < 0.6:
-                # Iterative variant: pick a random unfinished length (optionally filtered).
-                length_states = pointer.length_states or {}
-                candidate_lengths = []
+            # Round-robin over unfinished lengths using per-length pointer state.
+            length_states = pointer.length_states or {}
+            unfinished_lengths = []
+            for key, st in length_states.items():
+                if st.get("done"):
+                    continue
+                try:
+                    L = int(key)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= L <= pointer.max_length:
+                    unfinished_lengths.append(L)
 
-                for key, st in length_states.items():
-                    if st.get("done"):
-                        continue
-                    try:
-                        L = int(key)
-                    except (TypeError, ValueError):
-                        continue
-                    if allowed_short_lengths is not None and L not in allowed_short_lengths:
-                        continue
-                    candidate_lengths.append(L)
-
-                if candidate_lengths:
-                    length_for_block = random.choice(candidate_lengths)
-                    current_iter_length = length_for_block
-                    state = length_states[str(length_for_block)]
-                    batch = generate_batch_for_length(
-                        state,
-                        length_for_block,
-                        pointer.charset,
-                        tlds_for_block,
-                        block_count,
-                    )
-                    short_variant = f"iter_len_{length_for_block}"
-                else:
-                    # Either all lengths are exhausted or filtered out; fall back to word-based short variant.
-                    batch = generate_word_batch(word_pointer, tlds_for_block, block_count)
-                    short_variant = "words_fallback"
+            if unfinished_lengths:
+                unfinished_lengths.sort()
+                length_for_block = unfinished_lengths[next_length_rr_index % len(unfinished_lengths)]
+                next_length_rr_index += 1
+                current_iter_length = length_for_block
+                state = length_states[str(length_for_block)]
+                batch = generate_batch_for_length(
+                    state,
+                    length_for_block,
+                    pointer.charset,
+                    tlds_for_block,
+                    block_count,
+                )
+                short_variant = f"iter_len_{length_for_block}"
             else:
-                batch = generate_word_batch(word_pointer, tlds_for_block, block_count)
-                short_variant = "words"
+                batch = []
+                short_variant = "iter_exhausted"
         else:
             tlds_for_block = pointer.tlds  # reuse the same TLD set
             batch = generate_word_batch(word_pointer, tlds_for_block, block_count)
@@ -795,13 +807,7 @@ def run(
                             f"product={http_info.get('product_state')}"
                         )
 
-                    track_lengths = (
-                        mode_for_block == "short"
-                        and (
-                            allowed_short_lengths is None
-                            or length in allowed_short_lengths
-                        )
-                    )
+                    track_lengths = mode_for_block == "short"
                     pos_label = ""
                     if mode_for_block == "words" and word_pos_index:
                         pos_label = word_pos_index.get(label, "")
@@ -827,13 +833,7 @@ def run(
                         f"product={http_info.get('product_state')}"
                     )
 
-                track_lengths = (
-                    mode_for_block == "short"
-                    and (
-                        allowed_short_lengths is None
-                        or length in allowed_short_lengths
-                    )
-                )
+                track_lengths = mode_for_block == "short"
                 pos_label = ""
                 if mode_for_block == "words" and word_pos_index:
                     pos_label = word_pos_index.get(label, "")
@@ -905,7 +905,6 @@ def main() -> None:
     parser.add_argument("--pause", type=int, default=None, help="Optional pause in seconds between blocks when running continuously")
     parser.add_argument("--workers", type=int, default=None, help="Optional number of worker threads for DNS/HTTP checks (0 = single-threaded)")
     parser.add_argument("--config-file", type=str, default=None, help="Optional path to a JSON config file (overrides default collector/config.local.json)")
-    parser.add_argument("--uselocals", action="store_true", help="Use short_lengths and related tuning from the loaded local config")
 
     args = parser.parse_args()
 
@@ -922,22 +921,6 @@ def main() -> None:
     api_base = args.api_base or config.get("api_base", "https://dom4in.net")
     api_key = args.api_key or config.get("admin_api_key", "")
 
-    # Optional: restrict which short lengths are eligible (e.g. [7, 8, 9, 10])
-    # Only apply this when --uselocals is explicitly set, so normal runs ignore short_lengths.
-    allowed_short_lengths = None
-    if args.uselocals:
-        short_lengths_cfg = config.get("short_lengths")
-        if isinstance(short_lengths_cfg, list):
-            lengths = []
-            for value in short_lengths_cfg:
-                try:
-                    L = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if 1 <= L <= MAX_LENGTH:
-                    lengths.append(L)
-            if lengths:
-                allowed_short_lengths = set(lengths)
     cfg_block_pause = int(config.get("block_pause_seconds", 0)) if config else 0
     cfg_workers = int(config.get("worker_count", 0)) if config else 0
     if args.pause is not None:
@@ -977,7 +960,6 @@ def main() -> None:
         use_words=args.word,
         block_pause_seconds=block_pause_seconds,
         workers=workers,
-        allowed_short_lengths=allowed_short_lengths,
     )
 
 
