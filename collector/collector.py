@@ -167,40 +167,83 @@ def generate_batch_for_length(
 ) -> List[Tuple[str, str]]:
     """Generate a batch of (domain, tld) pairs for a specific label length.
 
-    Advances the provided per-length state in-place and marks the length as done
-    when all charset^length × TLD combinations have been exhausted.
+    This implementation keeps separate per-TLD indices for the given length so
+    that we can round-robin across TLDs and allow newly added TLDs to "catch
+    up" toward the average number of labels checked at this length.
     """
     batch: List[Tuple[str, str]] = []
 
     total_for_length = len(charset) ** length
-    tld_index = int(length_state.get("tld_index", 0) or 0)
-    index = int(length_state.get("index", 0) or 0)
-    done_flag = bool(length_state.get("done", False))
-
-    if done_flag or total_for_length <= 0 or not tlds:
+    if total_for_length <= 0 or not tlds:
         length_state["done"] = True
         return batch
 
-    while len(batch) < batch_size and not done_flag:
-        if index >= total_for_length:
-            # Finished this TLD's space for this length; move to next TLD.
-            index = 0
-            tld_index += 1
-            if tld_index >= len(tlds):
-                # All TLDs exhausted for this length.
-                done_flag = True
-                break
+    # Initialize per-TLD indices if needed and keep them in sync with the
+    # current TLD list from the Pointer. Any TLD not present in the current
+    # set is dropped; new TLDs start from index 0 for this length.
+    per_tld_index = length_state.get("per_tld_index") or {}
+    # Add new TLDs
+    for tld in tlds:
+        if tld not in per_tld_index:
+            per_tld_index[tld] = 0
+    # Drop TLDs that are no longer tracked
+    for tld in list(per_tld_index.keys()):
+        if tld not in tlds:
+            per_tld_index.pop(tld, None)
 
-        tld = tlds[tld_index]
-        label = index_to_label(index, length, charset)
-        index += 1
+    length_state["per_tld_index"] = per_tld_index
+
+    # Round-robin cursor over the TLD list for this length
+    rr_cursor = int(length_state.get("rr_cursor", 0) or 0)
+
+    # Main loop: pick TLDs in a mix of round-robin and catch-up mode.
+    while len(batch) < batch_size and per_tld_index:
+        # Compute average number of labels checked per TLD at this length.
+        counts = [per_tld_index[tld] for tld in tlds if tld in per_tld_index]
+        if not counts:
+            break
+        avg = sum(counts) / float(len(counts)) if counts else 0.0
+
+        # TLDs that are behind the average for this length.
+        deficit_tlds = [
+            tld
+            for tld in tlds
+            if tld in per_tld_index and per_tld_index[tld] < avg
+        ]
+
+        # With 50% probability, bias selection toward deficit TLDs to help
+        # them catch up; otherwise use simple round-robin over all TLDs.
+        use_catchup = bool(deficit_tlds) and random.random() < 0.5
+        if use_catchup:
+            # Choose the most under-served TLD (smallest per_tld_index).
+            tld = min(deficit_tlds, key=lambda t: per_tld_index[t])
+        else:
+            tld = tlds[rr_cursor % len(tlds)]
+            rr_cursor += 1
+
+        # If this TLD is no longer in per_tld_index (edge case after sync),
+        # skip it and continue.
+        if tld not in per_tld_index:
+            continue
+
+        idx = per_tld_index[tld]
+        if idx >= total_for_length:
+            # Exhausted this TLD's label space at this length. If all TLDs are
+            # exhausted, mark the length as done; otherwise, continue with others.
+            if all(v >= total_for_length for v in per_tld_index.values()):
+                length_state["done"] = True
+                break
+            else:
+                continue
+
+        label = index_to_label(idx, length, charset)
+        per_tld_index[tld] = idx + 1
 
         domain = f"{label}.{tld}"
         batch.append((domain, tld))
 
-    length_state["tld_index"] = tld_index
-    length_state["index"] = index
-    length_state["done"] = done_flag
+    length_state["per_tld_index"] = per_tld_index
+    length_state["rr_cursor"] = rr_cursor
 
     return batch
 
