@@ -27,14 +27,17 @@
     th:first-child, td:first-child { text-align: left; }
     th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #9ca3af; }
     tbody tr:hover { background: #020617; }
-    .length-chart-grid { margin-top: 0.5rem; display: grid; gap: 0.5rem; }
-    .length-chart-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: #d1d5db; }
-    .length-chart-label { width: 1.5rem; font-variant-numeric: tabular-nums; }
-    .length-chart-bar { flex: 1; height: 0.6rem; border-radius: 999px; overflow: hidden; display: flex; background: #020617; border: 1px solid #111827; }
+    .short-vis-row { margin-top: 0.75rem; display: flex; gap: 1rem; align-items: flex-start; }
+    .short-length-vis { flex: 0 0 46%; min-width: 0; }
+    .tld-length-vis { flex: 1; min-width: 0; }
+    .length-chart-grid { margin-top: 0.25rem; display: grid; gap: 0.4rem; }
+    .length-chart-row { display: flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; color: #d1d5db; }
+    .length-chart-label { width: 1.4rem; font-variant-numeric: tabular-nums; }
+    .length-chart-bar { flex: 1; height: 0.45rem; border-radius: 999px; overflow: hidden; display: flex; background: #020617; border: 1px solid #111827; }
     .length-chart-seg-unreg { background: #6b7280; }
     .length-chart-seg-unused { background: #eab308; }
     .length-chart-seg-other { background: #22c55e; }
-    .length-chart-legend { margin-top: 0.5rem; font-size: 0.75rem; color: #9ca3af; display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    .length-chart-legend { margin-top: 0.35rem; font-size: 0.72rem; color: #9ca3af; display: flex; flex-wrap: wrap; gap: 0.6rem; }
     .word-chart-grid { margin-top: 0.5rem; display: grid; gap: 0.5rem; }
     .word-chart-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: #d1d5db; }
     .word-chart-label { width: 5.5rem; text-transform: uppercase; font-size: 0.75rem; white-space: nowrap; }
@@ -46,6 +49,8 @@
     @media (max-width: 900px) {
       .layout { flex-direction: column; }
       .layout-main, .layout-side { flex: 1 1 auto; }
+      .short-vis-row { flex-direction: column; }
+      .short-length-vis, .tld-length-vis { flex: 1 1 auto; }
     }
   </style>
 </head>
@@ -66,11 +71,26 @@
         For each length, we show how the checked short domains split between unregistered (no DNS),
         registered but unused/parked, and active/other responses.
       </div>
-      <div id="length-charts" class="length-chart-grid"></div>
-      <div class="length-chart-legend">
-        <span class="legend-item"><span class="legend-swatch" style="background:#6b7280;"></span>Unregistered (no DNS)</span>
-        <span class="legend-item"><span class="legend-swatch" style="background:#eab308;"></span>Registered, unused/parked</span>
-        <span class="legend-item"><span class="legend-swatch" style="background:#22c55e;"></span>Active / other response</span>
+      <div class="short-vis-row">
+        <div class="short-length-vis">
+          <div id="length-charts" class="length-chart-grid"></div>
+          <div class="length-chart-legend">
+            <span class="legend-item"><span class="legend-swatch" style="background:#6b7280;"></span>Unregistered (no DNS)</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#eab308;"></span>Registered, unused/parked</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#22c55e;"></span>Active / other response</span>
+          </div>
+        </div>
+        <section id="tld-length-compare" class="tld-length-vis" style="font-size: 0.85rem; color: #d1d5db;">
+          <h2>Per-TLD short-domain comparison</h2>
+          <p style="color: #9ca3af; margin-top: 0.25rem;">
+            This view compares how often short labels (1–10 characters) appear unregistered across each tracked TLD.
+            The chart below shows one colored line per TLD; the x-axis is label length, and the y-axis is the share of
+            unregistered results among checked domains for that TLD and length.
+          </p>
+          <div id="tld-length-chart" style="margin-top: 0.5rem;"></div>
+          <div id="tld-length-legend" style="margin-top: 0.4rem; font-size: 0.75rem; color: #9ca3af;"></div>
+          <div id="tld-length-status" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
+        </section>
       </div>
       <table>
         <thead>
@@ -99,17 +119,6 @@
         <div id="word-overall" style="margin-top: 0.75rem;"></div>
         <div id="word-summary" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
         <div id="word-status" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
-      </section>
-      <section id="tld-length-compare" style="margin-top: 2rem; font-size: 0.85rem; color: #d1d5db;">
-        <h2>Per-TLD short-domain comparison</h2>
-        <p style="color: #9ca3af; margin-top: 0.25rem;">
-          This view compares how often short labels (1–10 characters) appear unregistered across each tracked TLD.
-          The chart below shows one colored line per TLD; the x-axis is label length, and the y-axis is the share of
-          unregistered results among checked domains for that TLD and length.
-        </p>
-        <div id="tld-length-chart" style="margin-top: 0.75rem;"></div>
-        <div id="tld-length-legend" style="margin-top: 0.5rem; font-size: 0.75rem; color: #9ca3af;"></div>
-        <div id="tld-length-status" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
       </section>
       <div id="last-updated" style="margin-top: 0.75rem;"></div>
     </section>
