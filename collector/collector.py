@@ -65,13 +65,23 @@ class Pointer:
 
     @property
     def tlds(self) -> List[str]:
-        # TODO: make this configurable via a file or CLI; for now a small sample
+        # TODO: make this configurable via a file or CLI; for now a fixed sample
+        # of widely used/commercial TLDs.
         return [
             "com",
             "net",
             "org",
             "io",
             "co",
+            "info",
+            "biz",
+            "online",
+            "store",
+            "app",
+            "dev",
+            "ai",
+            "xyz",
+            "me",
         ]
 
     def save(self) -> None:
