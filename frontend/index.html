@@ -96,6 +96,7 @@
             <th>Tracked domain checks</th>
             <th>Unregistered (no DNS)</th>
             <th>Unused / Parked (registered)</th>
+            <th>Active / Other</th>
           </tr>
         </thead>
         <tbody id="length-table-body">
@@ -208,12 +209,14 @@ curl https://dom4in.net/api/stats/overview
 
         lengthRows.forEach(row => {
           const tr = document.createElement('tr');
+          const activeCount = Math.max(0, (row.tracked || 0) - (row.unregistered_found || 0) - (row.unused_found || 0));
           tr.innerHTML = `
             <td>${row.length}</td>
             <td>${row.total_possible.toLocaleString()}</td>
             <td>${row.tracked.toLocaleString()}</td>
             <td>${row.unregistered_found.toLocaleString()}</td>
             <td>${row.unused_found.toLocaleString()}</td>
+            <td>${activeCount.toLocaleString()}</td>
           `;
           tbody.appendChild(tr);
           sumTracked += row.tracked || 0;
@@ -257,7 +260,7 @@ curl https://dom4in.net/api/stats/overview
             const pctLabel = document.createElement('div');
             pctLabel.style.minWidth = '7rem';
             pctLabel.style.textAlign = 'right';
-            pctLabel.textContent = `${unregPctLen.toFixed(1)}% / ${unusedPctLen.toFixed(1)}%`;
+            pctLabel.textContent = `Unreg ${unregPctLen.toFixed(1)}% • Unused ${unusedPctLen.toFixed(1)}% • Active ${otherPctLen.toFixed(1)}%`;
             rowEl.appendChild(pctLabel);
 
             chartsEl.appendChild(rowEl);
