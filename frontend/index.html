@@ -260,7 +260,7 @@ curl https://dom4in.net/api/stats/overview
             const pctLabel = document.createElement('div');
             pctLabel.style.minWidth = '7rem';
             pctLabel.style.textAlign = 'right';
-            pctLabel.textContent = `Unreg ${unregPctLen.toFixed(1)}% • Unused ${unusedPctLen.toFixed(1)}% • Active ${otherPctLen.toFixed(1)}%`;
+            pctLabel.textContent = `${unregPctLen.toFixed(1)}% / ${unusedPctLen.toFixed(1)}% / ${otherPctLen.toFixed(1)}%`;
             rowEl.appendChild(pctLabel);
 
             chartsEl.appendChild(rowEl);
