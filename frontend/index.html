@@ -259,6 +259,8 @@ curl https://dom4in.net/api/stats/overview
 
             const pctLabel = document.createElement('div');
             pctLabel.style.minWidth = '7rem';
+            pctLabel.style.width = '7.5rem';
+            pctLabel.style.flex = '0 0 7.5rem';
             pctLabel.style.textAlign = 'right';
             pctLabel.textContent = `${unregPctLen.toFixed(1)}% / ${unusedPctLen.toFixed(1)}% / ${otherPctLen.toFixed(1)}%`;
             rowEl.appendChild(pctLabel);
