@@ -524,13 +524,29 @@ curl https://dom4in.net/api/stats/overview
           totalUnusedWords += row.unused_found || 0;
         });
 
-        const order = ['noun', 'verb', 'adj', 'adv'];
+        const baseOrder = ['noun', 'verb', 'adj', 'adv'];
         const humanLabel = {
           noun: 'Nouns',
           verb: 'Verbs',
           adj: 'Adjectives',
           adv: 'Adverbs',
         };
+
+        // Derive display order dynamically so bars form a smooth curve, without
+        // mutating the underlying data. Sort by descending unregistered
+        // percentage, using the baseOrder as a deterministic tie-breaker.
+        const order = baseOrder
+          .filter(pos => byPos[pos] && byPos[pos].tracked > 0)
+          .sort((a, b) => {
+            const aggA = byPos[a];
+            const aggB = byPos[b];
+            const unregPctA = (aggA.unregistered / aggA.tracked) * 100;
+            const unregPctB = (aggB.unregistered / aggB.tracked) * 100;
+            if (unregPctB !== unregPctA) {
+              return unregPctB - unregPctA;
+            }
+            return baseOrder.indexOf(a) - baseOrder.indexOf(b);
+          });
 
         let anyRendered = false;
         order.forEach(pos => {
