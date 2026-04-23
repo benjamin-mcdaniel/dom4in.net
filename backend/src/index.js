@@ -1,16 +1,9 @@
-// dom4in-backend Worker
+// dom4in-backend — Cloudflare Worker
 //
-// Public endpoints:
-//   GET  /api/health
-//   GET  /api/stats/overview         — aggregates for the site, includes last_run_at / last_run_status
-//   GET  /api/stats/words            — word-POS aggregates only
-//
-// Admin endpoints (require x-admin-api-key matching env.ADMIN_API_KEY):
-//   POST /api/admin/upload-aggregate — push cumulative aggregates; idempotent if run_id+batch_id provided
-//   POST /api/admin/reset-stats      — DANGER: wipe all stats
-//   GET  /api/admin/state?key=...    — read opaque collector state value
-//   PUT  /api/admin/state            — write { key, value } (value JSON-stringified by caller)
-//   POST /api/admin/runs             — run lifecycle events: { run_id, event, ... }
+// Public:  GET /api/health, /api/stats/overview, /api/stats/words
+// Admin:   POST /api/admin/upload-aggregate, reset-stats, runs
+//          GET|PUT /api/admin/state
+// Admin endpoints require x-admin-api-key matching env.ADMIN_API_KEY.
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
@@ -93,9 +86,6 @@ async function handleOverview(env) {
       "SELECT date, domains_tracked_24h, updated_at FROM global_stats ORDER BY date DESC LIMIT 1"
     ).first();
 
-    // Pull last finished (or running) run so the site can show freshness
-    // without reading any stats tables. Best-effort: if the table doesn't
-    // exist yet we fall back to stats updated_at.
     let lastRun = null;
     try {
       lastRun = await env.DB.prepare(
@@ -219,24 +209,17 @@ async function handleUploadAggregate(request, env) {
     return json({ error: "invalid_payload" }, 400);
   }
 
-  // Optional idempotency. If both run_id and batch_id are provided, record
-  // them; a second POST with the same pair is rejected with 200 ok=false.
-  // If omitted (e.g. existing local runs), we fall through as before.
+  // Idempotency: reject duplicate (run_id, batch_id) pairs to prevent double-counting.
   if (run_id && batch_id) {
     try {
       const existing = await env.DB.prepare(
         "SELECT 1 AS hit FROM upload_dedupe WHERE run_id = ? AND batch_id = ?"
       ).bind(run_id, batch_id).first();
-      if (existing) {
-        return json({ ok: true, duplicate: true });
-      }
+      if (existing) return json({ ok: true, duplicate: true });
       await env.DB.prepare(
         "INSERT INTO upload_dedupe (run_id, batch_id) VALUES (?, ?)"
       ).bind(run_id, batch_id).run();
     } catch (err) {
-      // If the dedupe table isn't there yet (migration not applied), do NOT
-      // silently allow possible double-counting — reject so the operator
-      // notices.
       return json({ error: "dedupe_unavailable", message: String(err) }, 500);
     }
   }
@@ -336,8 +319,6 @@ async function handleResetStats(env) {
     await env.DB.prepare("DELETE FROM length_stats").run();
     await env.DB.prepare("DELETE FROM tld_stats").run();
     await env.DB.prepare("DELETE FROM word_pos_stats").run();
-    // Best-effort: clear idempotency log, but do NOT wipe `runs` or `state`
-    // so we still have an audit trail after a reset.
     try { await env.DB.prepare("DELETE FROM upload_dedupe").run(); } catch (_) {}
     return json({ ok: true });
   } catch (err) {
@@ -353,7 +334,6 @@ async function handleGetState(url, env) {
       "SELECT key, value, updated_at FROM state WHERE key = ?"
     ).bind(key).first();
     if (!row) return json({ key, value: null });
-    // Try to parse value back to JSON, but return raw string if it isn't valid.
     let parsed = null;
     try { parsed = JSON.parse(row.value); } catch (_) { parsed = null; }
     return json({
@@ -374,8 +354,6 @@ async function handlePutState(request, env) {
   if (!key || typeof key !== "string") return json({ error: "missing_key" }, 400);
   if (value === undefined) return json({ error: "missing_value" }, 400);
 
-  // Serialize non-string values. Strings pass through so clients can store
-  // pre-serialized blobs if they prefer.
   const stored = typeof value === "string" ? value : JSON.stringify(value);
 
   try {

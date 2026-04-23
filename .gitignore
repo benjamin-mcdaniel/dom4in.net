@@ -17,3 +17,7 @@ backend/.dev.vars
 
 # local db schema
 backend/.wrangler/state/v3/d1/*
+
+# Wrangler dev cache (contains account ID / email — never commit)
+backend/node_modules/
+node_modules/

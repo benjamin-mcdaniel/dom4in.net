@@ -1,429 +1,184 @@
 # dom4in.net
 
-dom4in.net is a domain market stats dashboard. It samples short domains (currently 1–10 character labels) across several major TLDs and shows **aggregated** data only (no per-domain lists), similar to a stock market overview. For most large TLDs, essentially all 1–3 character labels are already registered; dom4in.net still measures how those spaces behave but never publishes individual domain names.
+**Live site → [dom4in.net](https://dom4in.net)**
 
-This repo has three main parts:
+A domain market statistics dashboard. Samples short domains (1–10 character labels) across major TLDs and displays aggregated data — registered vs. available, parked vs. active — similar to a stock market overview. No per-domain lists are ever stored or published.
 
-- `frontend/` – Cloudflare Pages static site (HTML/CSS/JS)
-- `backend/` – Cloudflare Worker (via Wrangler) + D1 database schema
-- `collector/` – Local Python collector that probes domains and uploads aggregates
+![Cloudflare Pages](https://img.shields.io/badge/Frontend-Cloudflare%20Pages-orange?logo=cloudflare)
+![Cloudflare Workers](https://img.shields.io/badge/Backend-Cloudflare%20Workers-orange?logo=cloudflare)
+![Python](https://img.shields.io/badge/Collector-Python%203.11-blue?logo=python)
+![D1](https://img.shields.io/badge/Database-Cloudflare%20D1-orange?logo=cloudflare)
 
 ---
 
-## 1. Architecture overview
+## How it's built
 
-### Frontend (Cloudflare Pages)
+```
+dom4in.net/
+├── frontend/     Static HTML/CSS/JS — Cloudflare Pages
+├── backend/      Cloudflare Worker + D1 — REST API
+└── collector/    Python — runs locally or via GitHub Actions
+```
 
-- Static HTML/JS in `frontend/index.html`.
-- Calls `GET /api/stats/overview` to fetch:
-  - `domains_tracked_lifetime`
-  - `domains_tracked_24h`
-  - `last_updated_at`
-  - `letter_length_counts` for 1–10 character labels.
-- Renders:
-  - KPI cards (lifetime and 24h counts)
-  - A table and per-length visualization of 1–10 character label stats (aggregated across TLDs)
-  - A small nav (`Overview`, `Short domains`, `About`).
+**Frontend** (`frontend/index.html`) — single-file static site. Fetches aggregated stats from the Worker and renders KPI cards, a length-breakdown table, and per-category charts.
 
-### Backend (Cloudflare Worker)
+**Backend** (`backend/src/index.js`) — Cloudflare Worker backed by D1 (SQLite). Public read endpoints for stats; admin endpoints (key-protected) for the collector to push aggregates and track run state.
 
-- Code: `backend/src/index.js`
-- Config: `backend/wrangler.toml`
-- D1 schema: `backend/db/schema.sql`
+**Collector** (`collector/collector.py`) — Python script that probes domains via DNS-over-HTTPS + HTTP, classifies each one, and uploads only the aggregated counts. Restart-safe via pointer files. Runs on a schedule in GitHub Actions (3×/day) using cloud-persisted state so runs are stateless.
 
-Endpoints:
+### Data flow
 
-- `GET /api/health`
-  - Simple JSON `{ "status": "ok" }`.
+```mermaid
+flowchart LR
+    A[Collector\nlocal / GHA] -->|POST aggregate| B[Worker\nCloudflare]
+    B -->|upsert| C[(D1\nSQLite)]
+    D[Browser] -->|GET /api/stats| B
+    B -->|JSON| D
+```
 
-- `GET /api/stats/overview`
-  - Reads from D1 (`env.DB`):
-    - `global_stats` (latest row by `date`)
-    - `length_stats` for `tld = 'ALL'` and that `date`.
-  - Returns JSON like:
+### Collector flow
 
-    ```json
-    {
-      "domains_tracked_lifetime": 123456,
-      "domains_tracked_24h": 7890,
-      "last_updated_at": "2025-11-20T18:30:00Z",
-      "letter_length_counts": [
-        {
-          "length": 1,
-          "total_possible": 26,
-          "tracked": 26,
-          "unregistered_found": 5,
-          "unused_found": 2
-        }
-      ]
-    }
-    ```
-
-- `POST /api/admin/upload-aggregate`
-  - **Internal** admin endpoint for the collector.
-  - Auth: `x-admin-api-key` header must equal `env.ADMIN_API_KEY`.
-  - Body format:
-
-    ```json
-    {
-      "date": "2025-11-20",
-      "global": {
-        "domains_tracked_lifetime": 123456,
-        "domains_tracked_24h": 7890
-      },
-      "length_stats": [
-        {
-          "length": 1,
-          "total_possible": 26,
-          "tracked_count": 26,
-          "unregistered_found": 5,
-          "unused_found": 2
-        }
-      ]
-    }
-    ```
-
-  - Upserts into `global_stats` and replaces `length_stats` rows for that date + `tld = 'ALL'`.
-  - **Aggregation semantics:**
-    - `global_stats.domains_tracked_lifetime` – cumulative sum of all `domains_tracked_lifetime` values sent for each date. This is effectively total domain searches lifetime since the last DB reset.
-    - `global_stats.domains_tracked_24h` – cumulative sum per date (per day). Each run on a given date adds to that day's total.
-    - `length_stats` – cumulative lifetime aggregates under `snap_date = 'overall'` and `tld = 'ALL'`. New uploads add their counts to existing rows per `(snap_date, tld, length)` rather than overwriting them.
-
-- `POST /api/admin/reset-stats`
-  - **Internal** admin endpoint to clear aggregates.
-  - Auth: same `x-admin-api-key` check.
-  - Deletes all rows from `global_stats`, `length_stats`, and `tld_stats`.
-
-### Database (Cloudflare D1)
-
-Defined in `backend/db/schema.sql`:
-
-- `global_stats`
-  - `date` (TEXT, ISO date or label like `overall`)
-  - `domains_tracked_lifetime`
-  - `domains_tracked_24h`
-  - `created_at`, `updated_at`
-  - Unique index on `date`
-
-- `length_stats`
-  - `snap_date` (TEXT)
-  - `tld` (TEXT, `'ALL'` for aggregates across TLDs)
-  - `length` (INTEGER, 1–10)
-  - `total_possible` (INTEGER, e.g. currently `26^length` for labels drawn from `a–z` in the collector model)
-  - `tracked_count` – number of domain searches (label×TLD checks) in this length bucket
-  - `unregistered_found` – currently surfaced in the UI as **"Parking Detected"**
-  - `unused_found` – surfaced as **"Unused / No Website"**
-  - Unique index on `(snap_date, tld, length)`
-
-- `tld_stats`
-  - For future per-TLD summaries (currently not surfaced in the API/FE).
-
-Apply schema to remote D1:
-
-```bash
-cd backend
-wrangler d1 execute DOM4IN_DB --remote --file=db/schema.sql
+```mermaid
+flowchart TD
+    A[Start] --> B[Load config]
+    B --> C{Mode}
+    C -->|short| D[Iterate labels a–z, 1–10 chars]
+    C -->|word| E[Dictionary words ≤10 chars]
+    D & E --> F[DNS + HTTP check]
+    F --> G[Classify: registered / unregistered\nparked / active / unused]
+    G --> H[Aggregate block]
+    H --> I[POST to Worker]
+    I --> J[Save pointer]
+    J --> K{More?}
+    K -->|yes| C
+    K -->|no| L[Done]
 ```
 
 ---
 
-## 2. Collector (local Python)
+## Tech stack
 
-The collector runs **locally** and is responsible for:
+| Layer | Technology |
+|---|---|
+| Frontend hosting | Cloudflare Pages |
+| API | Cloudflare Workers (JS, no framework) |
+| Database | Cloudflare D1 (SQLite at the edge) |
+| Collector | Python 3.11, `httpx`, DNS-over-HTTPS |
+| CI/CD | GitHub Actions (deploy + scheduled collector) |
+| DNS probing | Cloudflare & Google DoH endpoints |
 
-- Generating candidate labels and combining them with a list of TLDs:
-  - **Short mode**: synthetic labels using `CHARSET` (currently 1–10 characters a–z).
-  - **Word mode**: real words (≤10 characters) from an external dictionary.
-- Checking:
-  - DNS via DNS-over-HTTPS (Cloudflare/Google/etc by default).
-  - HTTP (simple check of `https://<domain>`).
-- Classifying each domain as:
-  - `registered` / `unregistered`
-  - `usage_state`: `no_website` | `parked_or_placeholder` | `active_site`
-  - `product_state`: `active_product` | `unknown`
-- Aggregating counts over each **block** of domains.
-- Uploading a JSON aggregate for each block to `POST /api/admin/upload-aggregate`.
-- Maintaining **restart-safe pointers** so it resumes where it left off for both short and word modes.
+---
 
-Main file: `collector/collector.py`
+## Setup
 
-Dictionary loader (one-time per environment): `collector/load_dictionary.py`.
+### Prerequisites
+- Cloudflare account with Workers and D1 enabled
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) v4+
+- Python 3.11+
 
-Config (gitignored): `collector/config.local.json`:
+### 1. Clone & configure
+
+```bash
+git clone https://github.com/your-handle/dom4in.net
+cd dom4in.net
+```
+
+Create `collector/config.local.json` (gitignored):
 
 ```json
 {
   "api_base": "https://dom4in.net",
-  "admin_api_key": "YOUR_ADMIN_API_KEY_HERE",
-  "dns_resolvers": [
-    { "name": "cloudflare", "url": "https://cloudflare-dns.com/dns-query" },
-    { "name": "google",     "url": "https://dns.google/resolve" }
-  ],
-  "per_request_delay_ms": 0,
-  "block_pause_seconds": 0
+  "admin_api_key": "YOUR_ADMIN_API_KEY"
 }
 ```
 
-Pointer/state files (gitignored):
+Create `backend/.dev.vars` (gitignored):
 
-- `collector/state_pointer.json` – remembers where the collector last stopped in the short label/TLD space.
-- `collector/state_words_pointer.json` – remembers progress through the word list when word mode is enabled.
-Dictionary file (gitignored):
-
-- `wordlists/words_10_all.txt` – generated by `collector/load_dictionary.py` from a public English word list.
-
-### 2.1 Collector flow (Mermaid)
-
-```mermaid
-flowchart TD
-    A[Start collector] --> B[Load config file]
-    B --> C[Decide modes short or word]
-    C --> D[Load short pointer state]
-    C --> E[Load word pointer state]
-
-    D --> F[Pick next block size]
-    E --> F
-
-    F --> G{Block mode}
-
-    G -->|short| H[Short block]
-    G -->|word| W[Word block]
-
-    H --> H1{Short variant}
-    H1 -->|iterative| H2[Iterate short labels for chosen length]
-    H1 -->|words| H3[Use dictionary words as short labels]
-
-    H2 --> I[Build short batch]
-    H3 --> I
-
-    W --> J[Build word batch]
-
-    I --> K[Check DNS and HTTP]
-    J --> K
-
-    K --> L{Update stats}
-    L -->|short| M[Update global and length stats]
-    L -->|word| N[Update global and word stats]
-
-    M --> O[Send block to backend]
-    N --> O
-
-    O --> P[Save pointers]
-    P --> Q{More work}
-    Q -->|yes| F
-    Q -->|no| R[Stop]
+```
+ADMIN_API_KEY=YOUR_ADMIN_API_KEY
 ```
 
----
-
-## 3. Configuration & settings
-
-### 3.1 Collector config (local-only)
-
-`collector/config.local.json` (gitignored) controls how the collector talks to the backend and DNS:
-
-- `api_base` – Base URL for the backend API, e.g. `https://dom4in.net`.
-- `admin_api_key` – Shared secret used as the `x-admin-api-key` header. Must match `ADMIN_API_KEY` configured for the Worker.
-- `dns_resolvers` – Optional list of DNS-over-HTTPS resolvers. Each entry:
-
-  ```json
-  { "name": "cloudflare", "url": "https://cloudflare-dns.com/dns-query" }
-  ```
-
-  If omitted, defaults to Cloudflare and Google DoH endpoints. The collector rotates resolvers every 25 queries and falls back on error.
-
-- `per_request_delay_ms` – Optional integer (milliseconds). If >0, the collector sleeps this long after each domain to avoid hammering remote endpoints.
-
-### 3.2 Backend local config
-
-`backend/.dev.vars` (gitignored) is used only for local `wrangler dev`:
+### 2. Create D1 database
 
 ```bash
-ADMIN_API_KEY=your-admin-key-here
+wrangler d1 create DOM4IN_DB
+# Copy the database_id into backend/wrangler.toml
+wrangler d1 execute DOM4IN_DB --remote --file=backend/db/schema.sql
 ```
 
-In production, the same `ADMIN_API_KEY` value must be set as an environment variable/secret on the `dom4in-backend` Worker in the Cloudflare dashboard. The Worker never reads secrets from `wrangler.toml` in production; only from its environment.
-
-### Collector CLI
-
-Run from repo root:
+### 3. Deploy the Worker
 
 ```bash
-python collector/collector.py [options]
+cd backend && wrangler deploy
 ```
 
-Options:
+Set `ADMIN_API_KEY` as a secret on the Worker in the Cloudflare dashboard.
 
-- `--api-base` – override API base URL (default from config file; typically `https://dom4in.net`).
-- `--api-key` – override admin API key (default from config file).
-- `--dry-run` – do not POST to backend, just print the payload.
-- `--print-each` – print each domain and its classification as it is processed.
-- `--reset-pointer` – delete the short-mode pointer file and exit.
-- `--reset-db` – call `/api/admin/reset-stats` (requires valid admin key) and exit; can be combined with `--reset-pointer`.
-- `--short` – enable short label mode (1–6 characters from `CHARSET`).
-- `--word` – enable word-based mode using `wordlists/words_10_all.txt`.
-- `--pause N` – optional pause (in seconds) between randomly sized blocks.
+### 4. Deploy the frontend
 
-If neither `--short` nor `--word` is passed, the collector defaults to short mode. If both are passed, it alternates blocks (short → word → short → …).
+Connect the repo to Cloudflare Pages:
+- Build command: *(none)*
+- Output directory: `frontend`
 
-### Typical usage
-
-#### One-time setup
-
-1. Create `collector/config.local.json` with `api_base` and `admin_api_key` matching the Worker configuration.
-2. Ensure `ADMIN_API_KEY` is set for the Worker:
-   - Locally: put it in `backend/.dev.vars` for `wrangler dev`.
-   - Production: set `ADMIN_API_KEY` as a variable/secret in the Cloudflare Worker dashboard.
-3. Generate the word dictionary (if you plan to use `--word`):
-
-   ```bash
-   cd collector
-   python load_dictionary.py
-   cd ..
-   ```
-
-#### Continuous mixed run (short + words)
+### 5. Run the collector
 
 ```bash
+# One-time: generate word dictionary
+python collector/load_dictionary.py
+
+# Continuous mixed run (short + word modes)
 python collector/collector.py --short --word --pause 60
+
+# GitHub Actions: scheduled automatically via .github/workflows/collector.yml
 ```
 
-- Picks a random block size between 25 and 80 domains.
-- For each block:
-  - Generates domains (short or word mode, alternating when both are enabled).
-  - Runs DNS+HTTP checks and aggregates stats.
-  - Uploads a single aggregate payload for that block.
-  - Prints a brief summary to the console.
-  - Saves pointers so it can be safely restarted.
-- Sleeps `--pause` seconds between blocks.
+### Collector options
 
-#### Full reset (DB + pointer) in one line
-
-```bash
-python collector/collector.py --reset-db --reset-pointer
-```
-
-- Calls `/api/admin/reset-stats` to clear D1 aggregates.
-- Deletes `collector/state_pointer.json`.
-- Next run starts from the first label/TLD again.
+| Flag | Description |
+|---|---|
+| `--short` | Sample short labels (a–z, 1–10 chars) |
+| `--word` | Sample real English words ≤10 chars |
+| `--pause N` | Sleep N seconds between blocks |
+| `--dry-run` | Print payload without uploading |
+| `--reset-pointer` | Clear short-mode progress |
+| `--reset-db` | Wipe D1 aggregates (requires admin key) |
 
 ---
 
-## 3. Running locally
+## GitHub Actions
 
-### Backend (Worker) dev
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `deploy-worker.yml` | Push to `main` (backend changes) | Deploys Worker via Wrangler |
+| `collector.yml` | Cron 06:00/14:00/22:00 UTC + manual | Runs short-mode collector for 40 min |
 
-From `backend/`:
-
-```bash
-wrangler dev
-```
-
-Wrangler will:
-
-- Use `wrangler.toml` for config.
-- If present, load environment variables from `.dev.vars` (e.g. `ADMIN_API_KEY`).
-
-Local endpoints (default):
-
-- `http://127.0.0.1:8787/api/health`
-- `http://127.0.0.1:8787/api/stats/overview`
-
-### Frontend dev
-
-Simplest: open `frontend/index.html` directly in your browser for static layout. For local API tests against `wrangler dev`, you can temporarily point the fetch URL at the dev Worker URL instead of `/api/stats/overview`.
+Required secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `ADMIN_API_KEY`.
 
 ---
 
-## 4. Deployment
+## API
 
-### Frontend (Cloudflare Pages)
-
-- Pages project connected to this repo.
-- Root: repo root.
-- Build command: none (static).
-- Output directory: `frontend`.
-- Auto-deploys on push to `main`.
-
-### Backend (Worker) via GitHub Actions
-
-Workflow: `.github/workflows/deploy-worker.yml`.
-
-- Triggers on push to `main` when `backend/**` changes.
-- Steps:
-  - Checkout repo
-  - Install Node
-  - Install Wrangler
-  - `wrangler deploy` from `backend/`
-
-Requires GitHub Secrets:
-
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-
-### Collector (GitHub Actions, scheduled)
-
-Workflow: `.github/workflows/collector.yml`.
-
-- Trigger: cron `0 6,14,22 * * *` (3x/day UTC) + `workflow_dispatch`.
-- Concurrency group `collector` with `cancel-in-progress: false` – if a run is
-  still in flight when the next tick fires, the new one waits.
-- `timeout-minutes: 50` in GHA wraps the collector's own `--max-duration 2400`
-  (40min) so the job always exits cleanly, with the last block uploaded.
-- Runs short mode only: `python collector/collector.py --short --pause 1 --workers 4`.
-
-Environment wiring:
-
-- `API_BASE` – defaults to `https://dom4in.net`, overridable via `workflow_dispatch` input.
-- `ADMIN_API_KEY` – from repo secret of the same name.
-- `COLLECTOR_CLOUD_STATE=1` – pointer state is read/written via
-  `POST /api/admin/state` against the Worker, so GHA runners are stateless
-  and still resume where the previous run left off.
-- `COLLECTOR_SOURCE=github-actions` – tagged on each `runs` row for auditing.
-- `COLLECTOR_MAX_DURATION=2400` – wall-clock cap, overridable per dispatch.
-
-#### Required repo secret
-
-`ADMIN_API_KEY` must be added under **Settings → Secrets and variables → Actions**.
-Use the same value that is configured on the `dom4in-backend` Worker. Without
-it the job fails fast before hitting any endpoint.
-
-#### First-run smoke test
-
-Before relying on the cron schedule, run the workflow manually:
-
-1. Go to **Actions → Collector → Run workflow**.
-2. Leave the defaults (`max_duration=2400`, `api_base=https://dom4in.net`).
-3. Confirm in the logs that you see `run_start`, at least one `upload_ok`,
-   and a final `run_finish` with `status=success`.
-4. `GET https://dom4in.net/api/stats/overview` should report an updated
-   `last_updated_at` and a recent `last_run_at` / `last_run_status=success`.
-
-If the first run times out mid-block, that's fine — the next scheduled
-run picks up the pointer from D1 and continues. The idempotency key
-`(run_id, batch_id)` prevents any duplicate block from being re-applied
-if GHA retries a step.
-
-### Routes
-
-In Cloudflare dashboard, configure a route:
-
-- Pattern: `dom4in.net/api/*`
-- Worker: `dom4in-backend`
-
-Then frontend calls to `/api/...` from `dom4in.net` will be routed to the Worker.
+| Endpoint | Auth | Description |
+|---|---|---|
+| `GET /api/health` | — | Status check |
+| `GET /api/stats/overview` | — | Aggregated stats + run freshness |
+| `GET /api/stats/words` | — | Word/POS breakdown |
+| `POST /api/admin/upload-aggregate` | Admin key | Collector pushes a block |
+| `POST /api/admin/reset-stats` | Admin key | Wipe all aggregates |
+| `GET/PUT /api/admin/state` | Admin key | Cloud pointer storage |
+| `POST /api/admin/runs` | Admin key | Run lifecycle events |
 
 ---
 
-## 5. Design constraints & notes
+## Design principles
 
-- Frontend is static (no server-side JS) and runs on Cloudflare Pages.
-- Backend is a Cloudflare Worker using D1 for structured data.
-- The collector is designed to be:
-  - Local-only (runs on your machine).
-  - Restart-safe via a pointer file.
-  - Configurable via `config.local.json` (API base, admin key, DNS resolvers, delay).
-- Only aggregated stats are stored in the cloud DB; per-domain raw data stays local.
-- `CHARSET` currently includes only `a–z` in the collector, so `total_possible` is computed from that simple model. In the real domain ecosystem, short labels often mix letters and digits; throughout the UI, "length" always refers to the number of characters before the dot, regardless of whether they are letters or numbers. Extending the collector to digits or other characters will increase the search space and should be a deliberate change in `collector/collector.py`.
+- **Aggregates only** — raw domain names are never stored remotely.
+- **Walk-away safe** — no servers to maintain; everything runs on Cloudflare's free/low-cost tier and GitHub Actions.
+- **Restart-safe collector** — pointer files (local) or D1 state (cloud) mean a crashed run picks up where it left off.
+- **Idempotent uploads** — `(run_id, batch_id)` dedup prevents double-counting if GHA retries a step.
 
-WHOIS data for specific domains is operated by the individual TLD registries/registrars rather than ICANN itself; dom4in.net does not query WHOIS directly and only works with DNS/HTTP-derived aggregates.
+---
+
+## License
+
+MIT

@@ -90,6 +90,36 @@
       margin-top: 0.35rem; font-size: 0.72rem; color: var(--muted);
       display: flex; flex-wrap: wrap; gap: 0.6rem;
     }
+    /* Per-TLD small multiples — one mini-chart per TLD */
+    .tld-multiples {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 0.6rem;
+      margin-top: 0.25rem;
+    }
+    .tld-mini-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.55rem 0.65rem;
+    }
+    .tld-mini-head {
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-size: 0.78rem; margin-bottom: 0.35rem;
+    }
+    .tld-mini-name {
+      font-weight: 600; color: var(--text); text-transform: lowercase;
+      font-variant-numeric: tabular-nums;
+    }
+    .tld-mini-max {
+      font-size: 0.68rem; color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .tld-mini-svg { width: 100%; height: 44px; display: block; }
+    .tld-mini-svg .area { fill: var(--accent-unused); fill-opacity: 0.18; }
+    .tld-mini-svg .line { fill: none; stroke: var(--accent-unused); stroke-width: 1.5; }
+    .tld-mini-svg .dot  { fill: var(--accent-unused); cursor: crosshair; }
+    .tld-mini-svg .dot:hover { fill: var(--accent-active); }
     .legend-item { display: inline-flex; align-items: center; gap: 0.25rem; }
     .legend-swatch { width: 0.7rem; height: 0.7rem; border-radius: 999px; }
     table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.88rem; }
@@ -162,7 +192,7 @@
           </div>
         </div>
         <div>
-          <p>Per-TLD comparison. 0% = all registered at that length, 100% = all unregistered.</p>
+          <p>Unregistered share by length (1–10) for each TLD. Hover any point for details.</p>
           <div id="tld-length-chart"></div>
           <div id="tld-length-legend" class="muted" style="margin-top: 0.4rem;"></div>
           <div id="tld-length-status" class="muted" style="margin-top: 0.5rem;"></div>
@@ -260,17 +290,16 @@
 
       const age = Date.now() - d.getTime();
       const rel = formatRelative(age);
-      const stateWord = freshnessState.status === 'failed' ? ' • last run failed'
-                     : freshnessState.status === 'partial' ? ' • partial'
-                     : '';
 
-      // Stale: older than 36h, or latest run failed.
+      // Stale: older than 36h. Status text is intentionally not surfaced
+      // here — the dot color is the only visual cue. Partial runs happen
+      // routinely (block budget, GHA quirks) and shouldn't read as broken.
       if (age > STALE_THRESHOLD_MS || freshnessState.status === 'failed') {
         el.dataset.state = 'stale';
       } else {
         el.dataset.state = 'fresh';
       }
-      text.textContent = 'Updated ' + rel + stateWord;
+      text.textContent = 'Updated ' + rel;
       el.title = 'Last collector run: ' + d.toLocaleString();
     }
 
@@ -382,143 +411,96 @@
           }
         });
 
-        // Per-TLD line chart (SVG)
+        // Per-TLD small multiples: one mini-chart per TLD, unregistered %
+        // across lengths 1–10. Each card scales to its own max so low-%
+        // TLDs don't get flattened by high-% ones. Native SVG <title>
+        // gives a browser tooltip on hover — no JS event wiring needed.
         if (tldChartEl && tldLegendEl && tldStatusEl) {
+          tldLegendEl.innerHTML = '';
           if (!tldLengthRows.length) {
             tldStatusEl.textContent = 'Per-TLD length stats are not available yet.';
           } else {
+            tldStatusEl.textContent = '';
             const byTld = {};
             tldLengthRows.forEach(row => {
               const tld = row.tld;
-              if (!byTld[tld]) byTld[tld] = [];
+              if (!byTld[tld]) byTld[tld] = {};
               const tracked = row.tracked || 0;
               const unreg = row.unregistered_found || 0;
-              const pct = tracked > 0 ? (unreg / tracked) * 100 : 0;
-              byTld[tld].push({ length: row.length, pct, tracked, unreg });
+              const pct = tracked > 0 ? (unreg / tracked) * 100 : null;
+              byTld[tld][row.length] = { pct, tracked, unreg };
             });
 
             const allTlds = Object.keys(byTld).sort();
+            const grid = document.createElement('div');
+            grid.className = 'tld-multiples';
+
             allTlds.forEach(tld => {
-              const map = {};
-              byTld[tld].forEach(p => { map[p.length] = p; });
-              const series = [];
+              const card = document.createElement('div');
+              card.className = 'tld-mini-card';
+
+              const points = [];
+              let localMax = 0;
               for (let L = 1; L <= 10; L++) {
-                const v = map[L] || { length: L, pct: 0, tracked: 0, unreg: 0 };
-                series.push(v);
+                const v = byTld[tld][L] || { pct: null, tracked: 0, unreg: 0 };
+                points.push({ length: L, ...v });
+                if (v.pct != null && v.pct > localMax) localMax = v.pct;
               }
-              byTld[tld] = series;
-            });
+              // Round the y-axis ceiling up to the next 10% so the line has headroom.
+              const yMax = Math.max(10, Math.ceil(localMax / 10) * 10);
 
-            let maxPct = 0;
-            allTlds.forEach(tld => byTld[tld].forEach(p => { if (p.pct > maxPct) maxPct = p.pct; }));
-            if (maxPct <= 0) maxPct = 1;
+              const head = document.createElement('div');
+              head.className = 'tld-mini-head';
+              head.innerHTML =
+                '<span class="tld-mini-name">.' + tld + '</span>' +
+                '<span class="tld-mini-max">max ' + yMax + '% unreg</span>';
+              card.appendChild(head);
 
-            const width = 560, height = 220;
-            const marginLeft = 30, marginRight = 10, marginTop = 10, marginBottom = 24;
-            const plotWidth = width - marginLeft - marginRight;
-            const plotHeight = height - marginTop - marginBottom;
-            const xScale = L => marginLeft + ((L - 1) / 9) * plotWidth;
-            const yScale = pct => marginTop + plotHeight * (1 - pct / maxPct);
+              const w = 150, h = 44, padX = 4, padY = 4;
+              const plotW = w - padX * 2, plotH = h - padY * 2;
+              const xFor = i => padX + (i / 9) * plotW;
+              const yFor = pct => padY + plotH - (pct / yMax) * plotH;
 
-            const svgNS = 'http://www.w3.org/2000/svg';
-            const svg = document.createElementNS(svgNS, 'svg');
-            svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-            svg.setAttribute('width', '100%');
-            svg.setAttribute('height', 'auto');
-            svg.style.maxWidth = width + 'px';
+              const valid = points.filter(p => p.pct != null);
+              const pathD = valid.map((p, i) => {
+                const x = xFor(p.length - 1).toFixed(1);
+                const y = yFor(p.pct).toFixed(1);
+                return (i === 0 ? 'M' : 'L') + x + ',' + y;
+              }).join(' ');
+              const areaD = valid.length
+                ? pathD +
+                  ' L' + xFor(valid[valid.length - 1].length - 1).toFixed(1) + ',' + (padY + plotH).toFixed(1) +
+                  ' L' + xFor(valid[0].length - 1).toFixed(1) + ',' + (padY + plotH).toFixed(1) + ' Z'
+                : '';
 
-            const axisColor = '#4b5563', gridColor = '#111827';
-
-            const yAxis = document.createElementNS(svgNS, 'line');
-            yAxis.setAttribute('x1', marginLeft); yAxis.setAttribute('y1', marginTop);
-            yAxis.setAttribute('x2', marginLeft); yAxis.setAttribute('y2', marginTop + plotHeight);
-            yAxis.setAttribute('stroke', axisColor); yAxis.setAttribute('stroke-width', '1');
-            svg.appendChild(yAxis);
-
-            const xAxis = document.createElementNS(svgNS, 'line');
-            xAxis.setAttribute('x1', marginLeft); xAxis.setAttribute('y1', marginTop + plotHeight);
-            xAxis.setAttribute('x2', marginLeft + plotWidth); xAxis.setAttribute('y2', marginTop + plotHeight);
-            xAxis.setAttribute('stroke', axisColor); xAxis.setAttribute('stroke-width', '1');
-            svg.appendChild(xAxis);
-
-            [0, maxPct].forEach(p => {
-              const y = yScale(p);
-              const grid = document.createElementNS(svgNS, 'line');
-              grid.setAttribute('x1', marginLeft); grid.setAttribute('y1', y);
-              grid.setAttribute('x2', marginLeft + plotWidth); grid.setAttribute('y2', y);
-              grid.setAttribute('stroke', gridColor); grid.setAttribute('stroke-width', '0.5');
-              grid.setAttribute('stroke-dasharray', '2,2');
-              svg.appendChild(grid);
-
-              const label = document.createElementNS(svgNS, 'text');
-              label.setAttribute('x', marginLeft - 4); label.setAttribute('y', y + 3);
-              label.setAttribute('text-anchor', 'end'); label.setAttribute('font-size', '9');
-              label.setAttribute('fill', '#9ca3af');
-              label.textContent = `${p.toFixed(0)}%`;
-              svg.appendChild(label);
-            });
-
-            for (let L = 1; L <= 10; L++) {
-              const x = xScale(L);
-              const tick = document.createElementNS(svgNS, 'line');
-              tick.setAttribute('x1', x); tick.setAttribute('y1', marginTop + plotHeight);
-              tick.setAttribute('x2', x); tick.setAttribute('y2', marginTop + plotHeight + 4);
-              tick.setAttribute('stroke', axisColor); tick.setAttribute('stroke-width', '1');
-              svg.appendChild(tick);
-
-              const label = document.createElementNS(svgNS, 'text');
-              label.setAttribute('x', x); label.setAttribute('y', marginTop + plotHeight + 14);
-              label.setAttribute('text-anchor', 'middle'); label.setAttribute('font-size', '9');
-              label.setAttribute('fill', '#9ca3af');
-              label.textContent = String(L);
-              svg.appendChild(label);
-            }
-
-            const colorPalette = ['#60a5fa', '#f97316', '#a855f7', '#22c55e', '#e11d48', '#facc15'];
-            const tldColors = {};
-            allTlds.forEach((tld, idx) => { tldColors[tld] = colorPalette[idx % colorPalette.length]; });
-
-            allTlds.forEach(tld => {
-              const series = byTld[tld];
-              let d = '';
-              series.forEach((pt, idx) => {
-                const x = xScale(pt.length), y = yScale(pt.pct);
-                d += (idx === 0 ? 'M' : 'L') + x + ' ' + y + ' ';
+              const svgParts = [];
+              if (areaD) svgParts.push('<path class="area" d="' + areaD + '"/>');
+              if (pathD) svgParts.push('<path class="line" d="' + pathD + '"/>');
+              points.forEach(p => {
+                if (p.pct == null) return;
+                const cx = xFor(p.length - 1).toFixed(1);
+                const cy = yFor(p.pct).toFixed(1);
+                const pctTxt = p.pct.toFixed(1);
+                const title = '.' + tld + ' · length ' + p.length + ' · ' +
+                              pctTxt + '% unregistered · ' +
+                              p.tracked.toLocaleString() + ' tracked';
+                svgParts.push(
+                  '<circle class="dot" cx="' + cx + '" cy="' + cy + '" r="2.2">' +
+                  '<title>' + title + '</title></circle>'
+                );
               });
-              const path = document.createElementNS(svgNS, 'path');
-              path.setAttribute('d', d.trim());
-              path.setAttribute('fill', 'none');
-              path.setAttribute('stroke', tldColors[tld]);
-              path.setAttribute('stroke-width', '2');
-              svg.appendChild(path);
 
-              series.forEach(pt => {
-                const circ = document.createElementNS(svgNS, 'circle');
-                circ.setAttribute('cx', xScale(pt.length));
-                circ.setAttribute('cy', yScale(pt.pct));
-                circ.setAttribute('r', '2');
-                circ.setAttribute('fill', tldColors[tld]);
-                svg.appendChild(circ);
-              });
+              const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+              svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+              svg.setAttribute('preserveAspectRatio', 'none');
+              svg.classList.add('tld-mini-svg');
+              svg.innerHTML = svgParts.join('');
+              card.appendChild(svg);
+              grid.appendChild(card);
             });
 
-            tldChartEl.appendChild(svg);
-
-            allTlds.forEach(tld => {
-              const item = document.createElement('span');
-              item.style.display = 'inline-flex'; item.style.alignItems = 'center';
-              item.style.marginRight = '0.75rem';
-              const swatch = document.createElement('span');
-              swatch.style.display = 'inline-block'; swatch.style.width = '0.7rem';
-              swatch.style.height = '0.7rem'; swatch.style.borderRadius = '999px';
-              swatch.style.background = tldColors[tld]; swatch.style.marginRight = '0.25rem';
-              const label = document.createElement('span');
-              label.textContent = tld;
-              item.appendChild(swatch); item.appendChild(label);
-              tldLegendEl.appendChild(item);
-            });
-
-            tldStatusEl.textContent = 'Lines show the share of unregistered results by length for each TLD.';
+            tldChartEl.innerHTML = '';
+            tldChartEl.appendChild(grid);
           }
         }
 

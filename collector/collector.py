@@ -806,12 +806,18 @@ def run(
     workers: int = 0,
     run_id: Optional[str] = None,
     max_duration_seconds: int = 0,
+    max_blocks: int = 0,
 ) -> Dict:
     """Main collection loop.
 
     Returns a small summary dict used by main() to post the finish event:
     { 'domains_processed', 'errors_count', 'blocks', 'upload_failures',
       'timed_out', 'status' }.
+
+    Termination:
+      - max_blocks > 0  → stop cleanly after N blocks; status=success.
+      - max_duration_seconds > 0 → wall-clock cap; status=partial.
+      - Neither set → run until pointer space is exhausted.
     """
     run_started_monotonic = time.monotonic()
     summary = {
@@ -916,6 +922,18 @@ def run(
                 blocks_completed=summary["blocks"],
             )
             print(f"[timeout] Reached max duration of {max_duration_seconds}s; stopping cleanly.")
+            break
+
+        # Block-budget check. Unlike the time cap this is a *clean* exit
+        # (no timed_out flag), so a run that hit its block budget still
+        # reports status=success.
+        if max_blocks > 0 and summary["blocks"] >= max_blocks:
+            log_json(
+                "block_budget_reached",
+                max_blocks=max_blocks,
+                blocks_completed=summary["blocks"],
+            )
+            print(f"[blocks] Reached max blocks of {max_blocks}; stopping cleanly.")
             break
 
         block_index += 1
@@ -1158,6 +1176,7 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=None, help="Optional number of worker threads for DNS/HTTP checks (0 = single-threaded)")
     parser.add_argument("--config-file", type=str, default=None, help="Optional path to a JSON config file (overrides default collector/config.local.json)")
     parser.add_argument("--max-duration", type=int, default=None, help="Max wall-clock seconds before the collector stops cleanly (0 = no limit). Also honors env COLLECTOR_MAX_DURATION.")
+    parser.add_argument("--blocks", type=int, default=None, help="Stop cleanly after this many blocks (0 = unlimited). Unlike --max-duration this exit is considered success. Also honors env COLLECTOR_MAX_BLOCKS.")
     parser.add_argument("--run-id", type=str, default=None, help="Explicit run UUID. A fresh one is generated if omitted.")
     parser.add_argument("--source", type=str, default=None, help="Where this run was launched from (e.g. 'local', 'github-actions'). Stored in the runs table.")
     parser.add_argument("--cloud-state", action="store_true", help="Read/write collector state via the Worker /api/admin/state endpoint instead of local JSON files. Also honors env COLLECTOR_CLOUD_STATE=1.")
@@ -1220,6 +1239,16 @@ def main() -> None:
         except ValueError:
             max_duration_seconds = 0
 
+    # Block budget: same precedence. This is the preferred way to bound a
+    # scheduled run — clean exits are reported as success, not partial.
+    if args.blocks is not None:
+        max_blocks = max(0, args.blocks)
+    else:
+        try:
+            max_blocks = max(0, int(os.environ.get("COLLECTOR_MAX_BLOCKS", "0") or "0"))
+        except ValueError:
+            max_blocks = 0
+
     # Handle reset flows first — they short-circuit the run lifecycle.
     if args.reset_db:
         if not api_key:
@@ -1251,6 +1280,7 @@ def main() -> None:
         api_base=api_base,
         cloud_state=cloud_state_enabled,
         max_duration_seconds=max_duration_seconds,
+        max_blocks=max_blocks,
         use_short=bool(args.short),
         use_words=bool(args.word),
         dry_run=bool(args.dry_run),
@@ -1281,6 +1311,7 @@ def main() -> None:
             workers=workers,
             run_id=run_id,
             max_duration_seconds=max_duration_seconds,
+            max_blocks=max_blocks,
         ) or summary
         if summary.get("status") != "success":
             exit_code = 1
