@@ -3,74 +3,157 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Aggregate stats on short and word-based domain availability across major TLDs." />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' ry='12' fill='%23050816'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dominant-baseline='central' font-family='system-ui, -apple-system, BlinkMacSystemFont, %22Segoe UI%22, sans-serif' font-size='34' font-weight='700' fill='%23f9fafb'%3ED%3C/text%3E%3C/svg%3E" />
-  <title>dom4in.net – Domain Market Stats</title>
+  <title>dom4in.net — Domain Market Stats</title>
   <style>
-    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; background: #050816; color: #f9fafb; }
-    h1 { font-size: 1.9rem; margin: 0; }
-    h2 { margin-top: 2rem; margin-bottom: 0.5rem; }
-    .subtitle { color: #9ca3af; font-size: 0.85rem; }
-    nav { display: flex; gap: 1.5rem; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
-    .nav-right { display: flex; align-items: center; gap: 1.25rem; font-size: 0.85rem; color: #9ca3af; }
-    .nav-handle { color: #6b7280; white-space: nowrap; }
-    nav a { font-size: 0.85rem; color: #9ca3af; text-decoration: none; }
-    nav a:hover { color: #e5e7eb; }
-    .layout { display: flex; gap: 2rem; align-items: flex-start; margin-top: 1.5rem; }
-    .layout-main { flex: 0 0 68%; min-width: 0; }
-    .layout-side { flex: 1; min-width: 0; }
-    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
-    .card { background: #020617; border-radius: 0.75rem; padding: 1rem 1.25rem; border: 1px solid #111827; }
-    .card-label { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: #9ca3af; margin-bottom: 0.25rem; }
-    .card-value { font-size: 1.25rem; font-weight: 600; }
-    table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
-    th, td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #111827; text-align: right; }
-    th:first-child, td:first-child { text-align: left; }
-    th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #9ca3af; }
-    tbody tr:hover { background: #020617; }
-    .short-vis-row { margin-top: 0.75rem; display: flex; gap: 1rem; align-items: flex-start; }
-    .short-length-vis { flex: 0 0 46%; min-width: 0; }
-    .tld-length-vis { flex: 1; min-width: 0; }
+    :root {
+      --bg: #050816;
+      --panel: #020617;
+      --border: #111827;
+      --text: #f9fafb;
+      --muted: #9ca3af;
+      --muted-2: #6b7280;
+      --accent-unreg: #6b7280;
+      --accent-unused: #eab308;
+      --accent-active: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      padding: 1.75rem clamp(1rem, 4vw, 2.5rem);
+      max-width: 1100px;
+      margin: 0 auto;
+      line-height: 1.45;
+    }
+    h1 { font-size: 1.9rem; margin: 0; letter-spacing: -0.01em; }
+    h2 { margin: 2.25rem 0 0.5rem; font-size: 1.1rem; letter-spacing: 0.01em; }
+    p { color: #d1d5db; }
+    .subtitle { color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
+    header { margin-bottom: 1.25rem; }
+    .header-row {
+      display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+      gap: 0.75rem; row-gap: 0.25rem;
+    }
+    /* Freshness indicator — the soft ticker */
+    .freshness {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      font-size: 0.82rem; color: var(--muted);
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 999px; padding: 0.35rem 0.75rem;
+      white-space: nowrap;
+    }
+    .freshness-dot {
+      width: 0.55rem; height: 0.55rem; border-radius: 999px;
+      background: var(--accent-active);
+      box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6);
+      animation: freshness-pulse 2.4s infinite ease-out;
+    }
+    .freshness[data-state="stale"] .freshness-dot { background: var(--accent-unused); animation: none; }
+    .freshness[data-state="unknown"] .freshness-dot { background: var(--muted-2); animation: none; }
+    @keyframes freshness-pulse {
+      0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45); }
+      70%  { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+    }
+    .kpi-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem; margin: 1rem 0 0;
+    }
+    .card {
+      background: var(--panel); border-radius: 0.75rem;
+      padding: 1rem 1.25rem; border: 1px solid var(--border);
+    }
+    .card-label {
+      font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--muted); margin-bottom: 0.2rem;
+    }
+    .card-value { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .vis-row {
+      margin-top: 0.75rem; display: grid; gap: 1.25rem;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    @media (max-width: 820px) { .vis-row { grid-template-columns: 1fr; } }
+    .vis-row p { margin-top: 0; color: var(--muted); font-size: 0.85rem; }
     .length-chart-grid { margin-top: 0.25rem; display: grid; gap: 0.4rem; }
     .length-chart-row { display: flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; color: #d1d5db; }
     .length-chart-label { width: 1.4rem; font-variant-numeric: tabular-nums; }
-    .length-chart-bar { flex: 1; height: 0.45rem; border-radius: 999px; overflow: hidden; display: flex; background: #020617; border: 1px solid #111827; }
-    .length-chart-seg-unreg { background: #6b7280; }
-    .length-chart-seg-unused { background: #eab308; }
-    .length-chart-seg-other { background: #22c55e; }
-    .length-chart-legend { margin-top: 0.35rem; font-size: 0.72rem; color: #9ca3af; display: flex; flex-wrap: wrap; gap: 0.6rem; }
-    .word-chart-grid { margin-top: 0.5rem; display: grid; gap: 0.5rem; }
-    .word-chart-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: #d1d5db; }
-    .word-chart-label { width: 5.5rem; text-transform: uppercase; font-size: 0.75rem; white-space: nowrap; }
-    .word-chart-bar { flex: 1; height: 0.6rem; border-radius: 999px; overflow: hidden; display: flex; background: #020617; border: 1px solid #111827; }
+    .length-chart-bar {
+      flex: 1; height: 0.45rem; border-radius: 999px; overflow: hidden; display: flex;
+      background: var(--panel); border: 1px solid var(--border);
+    }
+    .length-chart-seg-unreg  { background: var(--accent-unreg); }
+    .length-chart-seg-unused { background: var(--accent-unused); }
+    .length-chart-seg-other  { background: var(--accent-active); }
+    .length-chart-legend {
+      margin-top: 0.35rem; font-size: 0.72rem; color: var(--muted);
+      display: flex; flex-wrap: wrap; gap: 0.6rem;
+    }
     .legend-item { display: inline-flex; align-items: center; gap: 0.25rem; }
     .legend-swatch { width: 0.7rem; height: 0.7rem; border-radius: 999px; }
-    #status { font-size: 0.875rem; color: #9ca3af; margin-top: 0.75rem; }
-    #last-updated { font-size: 0.8rem; color: #6b7280; margin-top: 0.5rem; }
-    @media (max-width: 900px) {
-      .layout { flex-direction: column; }
-      .layout-main, .layout-side { flex: 1 1 auto; }
-      .short-vis-row { flex-direction: column; }
-      .short-length-vis, .tld-length-vis { flex: 1 1 auto; }
+    table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.88rem; }
+    th, td {
+      padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border);
+      text-align: right; font-variant-numeric: tabular-nums;
+    }
+    th:first-child, td:first-child { text-align: left; }
+    th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+    tbody tr:hover { background: var(--panel); }
+    .word-chart-grid { margin-top: 0.5rem; display: grid; gap: 0.5rem; }
+    .word-chart-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.82rem; color: #d1d5db; }
+    .word-chart-label { width: 5.5rem; text-transform: uppercase; font-size: 0.72rem; white-space: nowrap; color: var(--muted); }
+    .word-chart-bar {
+      flex: 1; height: 0.6rem; border-radius: 999px; overflow: hidden; display: flex;
+      background: var(--panel); border: 1px solid var(--border);
+    }
+    .muted { color: var(--muted); font-size: 0.8rem; }
+    #status, #word-status { font-size: 0.82rem; color: var(--muted); margin-top: 0.75rem; }
+    pre {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 0.5rem; padding: 0.55rem 0.75rem;
+      font-size: 0.72rem; overflow: auto; margin: 0;
+    }
+    code { color: #e5e7eb; }
+    footer {
+      margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border);
+      font-size: 0.72rem; color: var(--muted-2);
     }
   </style>
 </head>
 <body>
   <header>
-    <nav>
-      <h1>dom4in.net</h1>
-      <div class="nav-right">
-        <div class="subtitle">High-level stats on short and meaningful domains</div>
-        <div class="nav-handle">@iamcdben</div>
+    <div class="header-row">
+      <div>
+        <h1>dom4in.net</h1>
+        <div class="subtitle">Aggregate availability stats for short and word-based domains.</div>
       </div>
-    </nav>
+      <div class="freshness" id="freshness" data-state="unknown" aria-live="polite" title="Time since last collector run">
+        <span class="freshness-dot" aria-hidden="true"></span>
+        <span id="freshness-text">Checking…</span>
+      </div>
+    </div>
   </header>
-  <main class="layout">
-    <section id="short-domains" class="layout-main">
-      <div class="short-vis-row">
-        <div class="short-length-vis">
-          <p style="font-size: 0.85rem; color: #9ca3af; margin-top: 0;">
-            <strong>1–10 Character Short Domains Overview</strong> Average TLD vacant, parked, used spread across 1–10 character labels.
-          </p>
+
+  <main>
+    <section id="overview">
+      <div class="kpi-grid">
+        <div class="card">
+          <div class="card-label">Domain checks — lifetime</div>
+          <div class="card-value" id="kpi-lifetime">–</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Domain checks — latest day</div>
+          <div class="card-value" id="kpi-24h">–</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="short-domains">
+      <h2>Short domains (1–10 chars)</h2>
+      <div class="vis-row">
+        <div>
+          <p>Average share of vacant, parked, and active results across 1–10 character labels.</p>
           <div id="length-charts" class="length-chart-grid"></div>
           <div class="length-chart-legend">
             <span class="legend-item"><span class="legend-swatch" style="background:#6b7280;"></span>Unregistered (no DNS)</span>
@@ -78,116 +161,147 @@
             <span class="legend-item"><span class="legend-swatch" style="background:#22c55e;"></span>Active / other response</span>
           </div>
         </div>
-        <section id="tld-length-compare" class="tld-length-vis" style="font-size: 0.85rem; color: #d1d5db;">
-          <p style="color: #9ca3af; margin-top: 0;">
-            <strong>Per-TLD short-domain comparison.</strong>
-            Per-TLD comparison of short domain availability. 0% = all registered, 100% = all unregistered.
-          </p>
-          <div id="tld-length-chart" style="margin-top: 0.5rem;"></div>
-          <div id="tld-length-legend" style="margin-top: 0.4rem; font-size: 0.75rem; color: #9ca3af;"></div>
-          <div id="tld-length-status" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
-        </section>
+        <div>
+          <p>Per-TLD comparison. 0% = all registered at that length, 100% = all unregistered.</p>
+          <div id="tld-length-chart"></div>
+          <div id="tld-length-legend" class="muted" style="margin-top: 0.4rem;"></div>
+          <div id="tld-length-status" class="muted" style="margin-top: 0.5rem;"></div>
+        </div>
       </div>
+
       <table>
         <thead>
           <tr>
             <th>Length</th>
-            <th>Possible labels (a–z, 0–9 per length)</th>
-            <th>Tracked domain checks</th>
+            <th>Possible labels (a–z, 0–9)</th>
+            <th>Tracked checks</th>
             <th>Unregistered (no DNS)</th>
-            <th>Unused / Parked (registered)</th>
+            <th>Unused / Parked</th>
             <th>Active / Other</th>
           </tr>
         </thead>
-        <tbody id="length-table-body">
-          <!-- Filled by JS -->
-        </tbody>
+        <tbody id="length-table-body"></tbody>
       </table>
-      <div id="status">Loading stats…</div>
-      <div id="derived-summary"></div>
 
-      <section id="word-stats" style="margin-top: 2rem; font-size: 0.85rem; color: #d1d5db;">
-        <h2>Word-based domains</h2>
-        <p style="color: #9ca3af; margin-top: 0.25rem;">
-          These aggregates look at real English words (nouns, verbs, adjectives, adverbs)
-          used as the label before the dot, across the same core TLD set.
-        </p>
-        <div id="word-charts" class="word-chart-grid"></div>
-        <div id="word-overall" style="margin-top: 0.75rem;"></div>
-        <div id="word-summary" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
-        <div id="word-status" style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem;"></div>
-      </section>
-      <div id="last-updated" style="margin-top: 0.75rem;"></div>
+      <div id="status">Loading stats…</div>
+      <div id="derived-summary" class="muted" style="margin-top: 0.5rem;"></div>
     </section>
 
-    <aside class="layout-side">
-      <section id="overview">
-        <h2>Domain Searches</h2>
-        <div class="kpi-grid">
-          <div class="card">
-            <div class="card-label">Lifetime</div>
-            <div class="card-value" id="kpi-lifetime">–</div>
-          </div>
-          <div class="card">
-            <div class="card-label">Last 24h</div>
-            <div class="card-value" id="kpi-24h">–</div>
-          </div>
-        </div>
-      </section>
+    <section id="word-stats">
+      <h2>Word-based domains</h2>
+      <p class="muted">Real English words (nouns, verbs, adjectives, adverbs) used as the label before the dot, across the same TLD set.</p>
+      <div id="word-charts" class="word-chart-grid"></div>
+      <div id="word-overall" style="margin-top: 0.5rem;"></div>
+      <div id="word-summary" class="muted" style="margin-top: 0.5rem;"></div>
+      <div id="word-status" class="muted"></div>
+    </section>
 
-      <section id="about" style="margin-top: 1.5rem; font-size: 0.9rem; color: #d1d5db;">
-        <h2>About this data</h2>
-        <p>
-          dom4in.net samples the short-domain space and reports high-level aggregates only. For the major TLDs we look at, essentially all 1–3 character labels are already registered; this dashboard still samples those spaces but never lists individual domains, only aggregate behavior.
-        </p>
-        <p style="margin-top: 0.75rem; font-size: 0.8rem; color: #9ca3af;">
-          <strong>Possible Labels</strong> is the theoretical size of the short-name space at that length – how many simple strings exist before the dot, under the character set the collector is using (currently letters <code>a–z</code> and digits <code>0–9</code>, 36 options per character). In practice, real short domains may also contain other symbols such as hyphens; the length charts should be read as "characters in the label before the dot" regardless of whether those characters are letters or numbers.
-          <strong>Tracked</strong> counts how many <em>domain checks</em> we have actually run so far for labels of that length across a fixed set of TLDs
-          (<span id="tld-list">com, net, org, io, co, info, biz, online, store, app, dev, ai, xyz, me</span>). A given label may be checked on one TLD, several TLDs, or not yet checked at all, so Tracked is the number of domain-level checks performed, not a complete <code>labels × TLDs</code> grid.
-        </p>
-        <p style="margin-top: 0.5rem; font-size: 0.8rem; color: #9ca3af;">
-          Below, we also summarize what fraction of the checked short domains appear unregistered (no DNS) or registered but unused/parked. These percentages are computed from the same aggregates and never expose individual domains. WHOIS and registration data for specific domains are operated by each TLD registry or registrar; ICANN coordinates the system but does not run a central public WHOIS service, and dom4in.net does not query WHOIS directly.
-        </p>
-        <section id="api-overview" style="margin-top: 1.25rem; font-size: 0.8rem; color: #d1d5db;">
-          <h3 style="font-size: 0.85rem; margin-bottom: 0.35rem;">Stats API overview</h3>
-          <p style="color: #9ca3af; margin-bottom: 0.35rem;">
-            The aggregates on this page come from a single JSON endpoint:
-          </p>
-          <div>
-            <pre style="background:#020617; border-radius:0.5rem; padding:0.5rem 0.75rem; border:1px solid #111827; font-size:0.7rem; overflow:auto;">
-curl https://dom4in.net/api/stats/overview
-            </pre>
-          </div>
-        </section>
-      </section>
-    </aside>
+    <section id="about">
+      <h2>About this data</h2>
+      <p>dom4in.net samples the short-domain space and reports high-level aggregates only. For the major TLDs tracked here, essentially all 1–3 character labels are already registered; this dashboard still samples those spaces but never lists individual domains, only aggregate behavior.</p>
+      <p class="muted"><strong>Possible labels</strong> is the theoretical size of the short-name space at that length — how many simple strings exist before the dot, under the character set the collector uses (letters <code>a–z</code> and digits <code>0–9</code>, 36 options per character). <strong>Tracked checks</strong> counts how many domain checks have been run for labels of that length across a fixed set of TLDs (<span id="tld-list">com, net, org, io, co, info, biz, online, store, app, dev, ai, xyz, me</span>). A label may be checked on one TLD, several, or none, so this is the number of checks performed, not a complete <code>labels × TLDs</code> grid.</p>
+      <p class="muted">The bars above show what fraction of checked domains appear unregistered (no DNS) or registered but unused/parked. These percentages are computed from the same aggregates and never expose individual domains. WHOIS and registration data for specific domains are operated by each TLD registry or registrar; dom4in.net does not query WHOIS directly.</p>
+    </section>
+
+    <section id="api-overview">
+      <h2>Stats API</h2>
+      <p class="muted">Everything on this page comes from a single public JSON endpoint:</p>
+      <pre><code>curl https://dom4in.net/api/stats/overview</code></pre>
+    </section>
   </main>
 
+  <footer>
+    Aggregates only. No individual domains are listed or stored.
+  </footer>
+
   <script>
+    // -------- freshness ticker ----------
+    // Strategy: fetch last_run_at once from the API. Compute "N minutes ago"
+    // client-side and re-render every 30s via setInterval. No DB hits on tick.
+    // If last_run_at > 36h old, flip to "stale" visual state.
+    const FRESHNESS_INTERVAL_MS = 30 * 1000;
+    const STALE_THRESHOLD_MS = 36 * 60 * 60 * 1000;
+
+    function formatRelative(ms) {
+      if (!isFinite(ms) || ms < 0) return 'just now';
+      const sec = Math.floor(ms / 1000);
+      if (sec < 60)     return sec + 's ago';
+      const min = Math.floor(sec / 60);
+      if (min < 60)     return min + 'm ago';
+      const hr = Math.floor(min / 60);
+      if (hr < 48)      return hr + 'h ago';
+      const day = Math.floor(hr / 24);
+      return day + 'd ago';
+    }
+
+    const freshnessState = {
+      lastRunAt: null,
+      status: null,
+      intervalId: null,
+    };
+
+    function renderFreshness() {
+      const el = document.getElementById('freshness');
+      const text = document.getElementById('freshness-text');
+      if (!el || !text) return;
+
+      if (!freshnessState.lastRunAt) {
+        el.dataset.state = 'unknown';
+        text.textContent = 'Last updated: unknown';
+        return;
+      }
+
+      const d = new Date(freshnessState.lastRunAt);
+      if (isNaN(d.getTime())) {
+        el.dataset.state = 'unknown';
+        text.textContent = 'Last updated: unknown';
+        return;
+      }
+
+      const age = Date.now() - d.getTime();
+      const rel = formatRelative(age);
+      const stateWord = freshnessState.status === 'failed' ? ' • last run failed'
+                     : freshnessState.status === 'partial' ? ' • partial'
+                     : '';
+
+      // Stale: older than 36h, or latest run failed.
+      if (age > STALE_THRESHOLD_MS || freshnessState.status === 'failed') {
+        el.dataset.state = 'stale';
+      } else {
+        el.dataset.state = 'fresh';
+      }
+      text.textContent = 'Updated ' + rel + stateWord;
+      el.title = 'Last collector run: ' + d.toLocaleString();
+    }
+
+    function startFreshnessTicker(lastRunAt, status) {
+      freshnessState.lastRunAt = lastRunAt || null;
+      freshnessState.status = status || null;
+      renderFreshness();
+      if (freshnessState.intervalId) clearInterval(freshnessState.intervalId);
+      freshnessState.intervalId = setInterval(renderFreshness, FRESHNESS_INTERVAL_MS);
+    }
+
+    // Re-render immediately on tab focus so a long-idle tab shows fresh time.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) renderFreshness();
+    });
+
+    // -------- data loaders ----------
     async function loadOverview() {
       const statusEl = document.getElementById('status');
       try {
         statusEl.textContent = 'Loading stats…';
         const res = await fetch('/api/stats/overview');
-        if (!res.ok) {
-          throw new Error('HTTP ' + res.status);
-        }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
 
-        document.getElementById('kpi-lifetime').textContent = data.domains_tracked_lifetime.toLocaleString();
-        document.getElementById('kpi-24h').textContent = data.domains_tracked_24h.toLocaleString();
+        document.getElementById('kpi-lifetime').textContent = (data.domains_tracked_lifetime || 0).toLocaleString();
+        document.getElementById('kpi-24h').textContent = (data.domains_tracked_24h || 0).toLocaleString();
 
-        const lastUpdatedEl = document.getElementById('last-updated');
-        if (data.last_updated_at) {
-          const d = new Date(data.last_updated_at);
-          if (!isNaN(d.getTime())) {
-            lastUpdatedEl.textContent = 'Last updated: ' + d.toLocaleString();
-          } else {
-            lastUpdatedEl.textContent = '';
-          }
-        } else {
-          lastUpdatedEl.textContent = '';
-        }
+        // Freshness: prefer last_run_at (collector run), fall back to last_updated_at.
+        const freshAt = data.last_run_at || data.last_updated_at || null;
+        startFreshnessTicker(freshAt, data.last_run_status || null);
 
         const tbody = document.getElementById('length-table-body');
         const chartsEl = document.getElementById('length-charts');
@@ -199,23 +313,22 @@ curl https://dom4in.net/api/stats/overview
         if (tldChartEl) tldChartEl.innerHTML = '';
         if (tldLegendEl) tldLegendEl.innerHTML = '';
         if (tldStatusEl) tldStatusEl.textContent = '';
+
         const lengthRows = data.letter_length_counts || [];
         const tldLengthRows = data.tld_length_counts || [];
-        // Stash word stats from the overview payload so the word loader can reuse them
         window.__overviewWordStats = data.word_pos_stats || [];
-        let sumTracked = 0;
-        let sumUnregistered = 0;
-        let sumUnused = 0;
+
+        let sumTracked = 0, sumUnregistered = 0, sumUnused = 0;
 
         lengthRows.forEach(row => {
           const tr = document.createElement('tr');
           const activeCount = Math.max(0, (row.tracked || 0) - (row.unregistered_found || 0) - (row.unused_found || 0));
           tr.innerHTML = `
             <td>${row.length}</td>
-            <td>${row.total_possible.toLocaleString()}</td>
-            <td>${row.tracked.toLocaleString()}</td>
-            <td>${row.unregistered_found.toLocaleString()}</td>
-            <td>${row.unused_found.toLocaleString()}</td>
+            <td>${(row.total_possible || 0).toLocaleString()}</td>
+            <td>${(row.tracked || 0).toLocaleString()}</td>
+            <td>${(row.unregistered_found || 0).toLocaleString()}</td>
+            <td>${(row.unused_found || 0).toLocaleString()}</td>
             <td>${activeCount.toLocaleString()}</td>
           `;
           tbody.appendChild(tr);
@@ -269,7 +382,7 @@ curl https://dom4in.net/api/stats/overview
           }
         });
 
-        // Per-TLD comparison chart (multi-line SVG)
+        // Per-TLD line chart (SVG)
         if (tldChartEl && tldLegendEl && tldStatusEl) {
           if (!tldLengthRows.length) {
             tldStatusEl.textContent = 'Per-TLD length stats are not available yet.';
@@ -285,7 +398,6 @@ curl https://dom4in.net/api/stats/overview
             });
 
             const allTlds = Object.keys(byTld).sort();
-            // Normalize series to lengths 1-10
             allTlds.forEach(tld => {
               const map = {};
               byTld[tld].forEach(p => { map[p.length] = p; });
@@ -297,120 +409,82 @@ curl https://dom4in.net/api/stats/overview
               byTld[tld] = series;
             });
 
-            // Determine max pct for y-scale
             let maxPct = 0;
-            allTlds.forEach(tld => {
-              byTld[tld].forEach(p => {
-                if (p.pct > maxPct) maxPct = p.pct;
-              });
-            });
+            allTlds.forEach(tld => byTld[tld].forEach(p => { if (p.pct > maxPct) maxPct = p.pct; }));
             if (maxPct <= 0) maxPct = 1;
 
-            const width = 640;
-            const height = 240;
-            const marginLeft = 32;
-            const marginRight = 12;
-            const marginTop = 10;
-            const marginBottom = 24;
+            const width = 560, height = 220;
+            const marginLeft = 30, marginRight = 10, marginTop = 10, marginBottom = 24;
             const plotWidth = width - marginLeft - marginRight;
             const plotHeight = height - marginTop - marginBottom;
-
             const xScale = L => marginLeft + ((L - 1) / 9) * plotWidth;
             const yScale = pct => marginTop + plotHeight * (1 - pct / maxPct);
 
             const svgNS = 'http://www.w3.org/2000/svg';
             const svg = document.createElementNS(svgNS, 'svg');
-            svg.setAttribute('width', width.toString());
-            svg.setAttribute('height', height.toString());
             svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+            svg.setAttribute('width', '100%');
+            svg.setAttribute('height', 'auto');
+            svg.style.maxWidth = width + 'px';
 
-            // Axes
-            const axisColor = '#4b5563';
-            const gridColor = '#111827';
+            const axisColor = '#4b5563', gridColor = '#111827';
 
-            // Y-axis line
             const yAxis = document.createElementNS(svgNS, 'line');
-            yAxis.setAttribute('x1', marginLeft.toString());
-            yAxis.setAttribute('y1', marginTop.toString());
-            yAxis.setAttribute('x2', marginLeft.toString());
-            yAxis.setAttribute('y2', (marginTop + plotHeight).toString());
-            yAxis.setAttribute('stroke', axisColor);
-            yAxis.setAttribute('stroke-width', '1');
+            yAxis.setAttribute('x1', marginLeft); yAxis.setAttribute('y1', marginTop);
+            yAxis.setAttribute('x2', marginLeft); yAxis.setAttribute('y2', marginTop + plotHeight);
+            yAxis.setAttribute('stroke', axisColor); yAxis.setAttribute('stroke-width', '1');
             svg.appendChild(yAxis);
 
-            // X-axis line
             const xAxis = document.createElementNS(svgNS, 'line');
-            xAxis.setAttribute('x1', marginLeft.toString());
-            xAxis.setAttribute('y1', (marginTop + plotHeight).toString());
-            xAxis.setAttribute('x2', (marginLeft + plotWidth).toString());
-            xAxis.setAttribute('y2', (marginTop + plotHeight).toString());
-            xAxis.setAttribute('stroke', axisColor);
-            xAxis.setAttribute('stroke-width', '1');
+            xAxis.setAttribute('x1', marginLeft); xAxis.setAttribute('y1', marginTop + plotHeight);
+            xAxis.setAttribute('x2', marginLeft + plotWidth); xAxis.setAttribute('y2', marginTop + plotHeight);
+            xAxis.setAttribute('stroke', axisColor); xAxis.setAttribute('stroke-width', '1');
             svg.appendChild(xAxis);
 
-            // Horizontal grid + y labels (0%, ~max%)
-            const yTicks = [0, maxPct];
-            yTicks.forEach(p => {
+            [0, maxPct].forEach(p => {
               const y = yScale(p);
               const grid = document.createElementNS(svgNS, 'line');
-              grid.setAttribute('x1', marginLeft.toString());
-              grid.setAttribute('y1', y.toString());
-              grid.setAttribute('x2', (marginLeft + plotWidth).toString());
-              grid.setAttribute('y2', y.toString());
-              grid.setAttribute('stroke', gridColor);
-              grid.setAttribute('stroke-width', '0.5');
+              grid.setAttribute('x1', marginLeft); grid.setAttribute('y1', y);
+              grid.setAttribute('x2', marginLeft + plotWidth); grid.setAttribute('y2', y);
+              grid.setAttribute('stroke', gridColor); grid.setAttribute('stroke-width', '0.5');
               grid.setAttribute('stroke-dasharray', '2,2');
               svg.appendChild(grid);
 
               const label = document.createElementNS(svgNS, 'text');
-              label.setAttribute('x', (marginLeft - 4).toString());
-              label.setAttribute('y', (y + 3).toString());
-              label.setAttribute('text-anchor', 'end');
-              label.setAttribute('font-size', '9');
+              label.setAttribute('x', marginLeft - 4); label.setAttribute('y', y + 3);
+              label.setAttribute('text-anchor', 'end'); label.setAttribute('font-size', '9');
               label.setAttribute('fill', '#9ca3af');
               label.textContent = `${p.toFixed(0)}%`;
               svg.appendChild(label);
             });
 
-            // X-axis ticks (length 1-10)
             for (let L = 1; L <= 10; L++) {
               const x = xScale(L);
               const tick = document.createElementNS(svgNS, 'line');
-              tick.setAttribute('x1', x.toString());
-              tick.setAttribute('y1', (marginTop + plotHeight).toString());
-              tick.setAttribute('x2', x.toString());
-              tick.setAttribute('y2', (marginTop + plotHeight + 4).toString());
-              tick.setAttribute('stroke', axisColor);
-              tick.setAttribute('stroke-width', '1');
+              tick.setAttribute('x1', x); tick.setAttribute('y1', marginTop + plotHeight);
+              tick.setAttribute('x2', x); tick.setAttribute('y2', marginTop + plotHeight + 4);
+              tick.setAttribute('stroke', axisColor); tick.setAttribute('stroke-width', '1');
               svg.appendChild(tick);
 
               const label = document.createElementNS(svgNS, 'text');
-              label.setAttribute('x', x.toString());
-              label.setAttribute('y', (marginTop + plotHeight + 14).toString());
-              label.setAttribute('text-anchor', 'middle');
-              label.setAttribute('font-size', '9');
+              label.setAttribute('x', x); label.setAttribute('y', marginTop + plotHeight + 14);
+              label.setAttribute('text-anchor', 'middle'); label.setAttribute('font-size', '9');
               label.setAttribute('fill', '#9ca3af');
               label.textContent = String(L);
               svg.appendChild(label);
             }
 
-            // Colors per TLD
             const colorPalette = ['#60a5fa', '#f97316', '#a855f7', '#22c55e', '#e11d48', '#facc15'];
             const tldColors = {};
-            allTlds.forEach((tld, idx) => {
-              tldColors[tld] = colorPalette[idx % colorPalette.length];
-            });
+            allTlds.forEach((tld, idx) => { tldColors[tld] = colorPalette[idx % colorPalette.length]; });
 
-            // Draw lines per TLD
             allTlds.forEach(tld => {
               const series = byTld[tld];
               let d = '';
               series.forEach((pt, idx) => {
-                const x = xScale(pt.length);
-                const y = yScale(pt.pct);
+                const x = xScale(pt.length), y = yScale(pt.pct);
                 d += (idx === 0 ? 'M' : 'L') + x + ' ' + y + ' ';
               });
-
               const path = document.createElementNS(svgNS, 'path');
               path.setAttribute('d', d.trim());
               path.setAttribute('fill', 'none');
@@ -418,13 +492,10 @@ curl https://dom4in.net/api/stats/overview
               path.setAttribute('stroke-width', '2');
               svg.appendChild(path);
 
-              // Add small circles at each point for visibility
               series.forEach(pt => {
-                const cx = xScale(pt.length);
-                const cy = yScale(pt.pct);
                 const circ = document.createElementNS(svgNS, 'circle');
-                circ.setAttribute('cx', cx.toString());
-                circ.setAttribute('cy', cy.toString());
+                circ.setAttribute('cx', xScale(pt.length));
+                circ.setAttribute('cy', yScale(pt.pct));
                 circ.setAttribute('r', '2');
                 circ.setAttribute('fill', tldColors[tld]);
                 svg.appendChild(circ);
@@ -433,26 +504,17 @@ curl https://dom4in.net/api/stats/overview
 
             tldChartEl.appendChild(svg);
 
-            // Legend
             allTlds.forEach(tld => {
               const item = document.createElement('span');
-              item.style.display = 'inline-flex';
-              item.style.alignItems = 'center';
+              item.style.display = 'inline-flex'; item.style.alignItems = 'center';
               item.style.marginRight = '0.75rem';
-
               const swatch = document.createElement('span');
-              swatch.style.display = 'inline-block';
-              swatch.style.width = '0.7rem';
-              swatch.style.height = '0.7rem';
-              swatch.style.borderRadius = '999px';
-              swatch.style.background = tldColors[tld];
-              swatch.style.marginRight = '0.25rem';
-
+              swatch.style.display = 'inline-block'; swatch.style.width = '0.7rem';
+              swatch.style.height = '0.7rem'; swatch.style.borderRadius = '999px';
+              swatch.style.background = tldColors[tld]; swatch.style.marginRight = '0.25rem';
               const label = document.createElement('span');
               label.textContent = tld;
-
-              item.appendChild(swatch);
-              item.appendChild(label);
+              item.appendChild(swatch); item.appendChild(label);
               tldLegendEl.appendChild(item);
             });
 
@@ -465,8 +527,8 @@ curl https://dom4in.net/api/stats/overview
           const unregPct = (sumUnregistered / sumTracked) * 100;
           const unusedPct = (sumUnused / sumTracked) * 100;
           summaryEl.innerHTML = `
-            Overall, we have run <strong>${sumTracked.toLocaleString()}</strong> short-domain searches across
-            all tracked lengths. Of the domains checked, roughly
+            Overall, <strong>${sumTracked.toLocaleString()}</strong> short-domain checks have been run across
+            all tracked lengths. Roughly
             <strong>${unregPct.toFixed(1)}%</strong> appeared unregistered (no DNS) and
             <strong>${unusedPct.toFixed(1)}%</strong> were registered but unused/parked.
           `;
@@ -474,13 +536,13 @@ curl https://dom4in.net/api/stats/overview
           summaryEl.textContent = '';
         }
 
-        statusEl.textContent = 'Stats loaded from backend API.';
-
-        // Now that word stats from the overview are available, render the word-based charts
+        statusEl.textContent = '';
         loadWordStats();
       } catch (err) {
         console.error(err);
         statusEl.textContent = 'Failed to load stats. Backend may not be running yet.';
+        // Keep freshness marker honest
+        startFreshnessTicker(null, null);
       }
     }
 
@@ -489,72 +551,45 @@ curl https://dom4in.net/api/stats/overview
       const chartsEl = document.getElementById('word-charts');
       const overallEl = document.getElementById('word-overall');
       const summaryEl = document.getElementById('word-summary');
-      if (!wordStatusEl || !chartsEl || !overallEl || !summaryEl) {
-        return;
-      }
+      if (!wordStatusEl || !chartsEl || !overallEl || !summaryEl) return;
 
       try {
-        wordStatusEl.textContent = 'Loading word-based stats…';
-        chartsEl.innerHTML = '';
-        overallEl.innerHTML = '';
-        summaryEl.textContent = '';
-
+        chartsEl.innerHTML = ''; overallEl.innerHTML = ''; summaryEl.textContent = '';
         const rows = Array.isArray(window.__overviewWordStats) ? window.__overviewWordStats : [];
-
         if (!rows.length) {
           wordStatusEl.textContent = 'Word-based stats are not available yet.';
           return;
         }
 
         const byPos = {};
-        let totalTrackedWords = 0;
-        let totalUnregisteredWords = 0;
-        let totalUnusedWords = 0;
+        let totalTracked = 0, totalUnreg = 0, totalUnused = 0;
         rows.forEach(row => {
           const pos = row.pos || 'other';
-          if (!byPos[pos]) {
-            byPos[pos] = { tracked: 0, unregistered: 0, unused: 0 };
-          }
+          if (!byPos[pos]) byPos[pos] = { tracked: 0, unregistered: 0, unused: 0 };
           byPos[pos].tracked += row.tracked || 0;
           byPos[pos].unregistered += row.unregistered_found || 0;
           byPos[pos].unused += row.unused_found || 0;
-
-          totalTrackedWords += row.tracked || 0;
-          totalUnregisteredWords += row.unregistered_found || 0;
-          totalUnusedWords += row.unused_found || 0;
+          totalTracked += row.tracked || 0;
+          totalUnreg += row.unregistered_found || 0;
+          totalUnused += row.unused_found || 0;
         });
 
         const baseOrder = ['noun', 'verb', 'adj', 'adv'];
-        const humanLabel = {
-          noun: 'Nouns',
-          verb: 'Verbs',
-          adj: 'Adjectives',
-          adv: 'Adverbs',
-        };
-
-        // Derive display order dynamically so bars form a smooth curve, without
-        // mutating the underlying data. Sort by descending unregistered
-        // percentage, using the baseOrder as a deterministic tie-breaker.
+        const humanLabel = { noun: 'Nouns', verb: 'Verbs', adj: 'Adjectives', adv: 'Adverbs' };
         const order = baseOrder
           .filter(pos => byPos[pos] && byPos[pos].tracked > 0)
           .sort((a, b) => {
-            const aggA = byPos[a];
-            const aggB = byPos[b];
-            const unregPctA = (aggA.unregistered / aggA.tracked) * 100;
-            const unregPctB = (aggB.unregistered / aggB.tracked) * 100;
-            if (unregPctB !== unregPctA) {
-              return unregPctB - unregPctA;
-            }
+            const aggA = byPos[a], aggB = byPos[b];
+            const pctA = (aggA.unregistered / aggA.tracked) * 100;
+            const pctB = (aggB.unregistered / aggB.tracked) * 100;
+            if (pctB !== pctA) return pctB - pctA;
             return baseOrder.indexOf(a) - baseOrder.indexOf(b);
           });
 
         let anyRendered = false;
         order.forEach(pos => {
           const agg = byPos[pos];
-          if (!agg || agg.tracked <= 0) {
-            return;
-          }
-
+          if (!agg || agg.tracked <= 0) return;
           const total = agg.tracked;
           const unregPct = (agg.unregistered / total) * 100;
           const unusedPct = (agg.unused / total) * 100;
@@ -570,22 +605,10 @@ curl https://dom4in.net/api/stats/overview
 
           const barEl = document.createElement('div');
           barEl.className = 'word-chart-bar';
-
-          const segUnreg = document.createElement('div');
-          segUnreg.className = 'length-chart-seg-unreg';
-          segUnreg.style.width = unregPct.toFixed(2) + '%';
-
-          const segUnused = document.createElement('div');
-          segUnused.className = 'length-chart-seg-unused';
-          segUnused.style.width = unusedPct.toFixed(2) + '%';
-
-          const segOther = document.createElement('div');
-          segOther.className = 'length-chart-seg-other';
-          segOther.style.width = otherPct.toFixed(2) + '%';
-
-          barEl.appendChild(segUnreg);
-          barEl.appendChild(segUnused);
-          barEl.appendChild(segOther);
+          const s1 = document.createElement('div'); s1.className = 'length-chart-seg-unreg';  s1.style.width = unregPct.toFixed(2) + '%';
+          const s2 = document.createElement('div'); s2.className = 'length-chart-seg-unused'; s2.style.width = unusedPct.toFixed(2) + '%';
+          const s3 = document.createElement('div'); s3.className = 'length-chart-seg-other';  s3.style.width = otherPct.toFixed(2) + '%';
+          barEl.appendChild(s1); barEl.appendChild(s2); barEl.appendChild(s3);
           rowEl.appendChild(barEl);
 
           const pctLabel = document.createElement('div');
@@ -593,7 +616,6 @@ curl https://dom4in.net/api/stats/overview
           pctLabel.style.textAlign = 'right';
           pctLabel.textContent = `Unreg ${unregPct.toFixed(1)}% • Unused ${unusedPct.toFixed(1)}% • Active ${otherPct.toFixed(1)}%`;
           rowEl.appendChild(pctLabel);
-
           chartsEl.appendChild(rowEl);
           anyRendered = true;
         });
@@ -603,15 +625,13 @@ curl https://dom4in.net/api/stats/overview
           return;
         }
 
-        // Overall bar and numeric summary across all word-mode domains
-        if (totalTrackedWords > 0) {
-          const unregPctAll = (totalUnregisteredWords / totalTrackedWords) * 100;
-          const unusedPctAll = (totalUnusedWords / totalTrackedWords) * 100;
+        if (totalTracked > 0) {
+          const unregPctAll = (totalUnreg / totalTracked) * 100;
+          const unusedPctAll = (totalUnused / totalTracked) * 100;
           const otherPctAll = Math.max(0, 100 - unregPctAll - unusedPctAll);
 
           const rowEl = document.createElement('div');
           rowEl.className = 'word-chart-row';
-
           const labelEl = document.createElement('div');
           labelEl.className = 'word-chart-label';
           labelEl.textContent = 'All words';
@@ -619,22 +639,10 @@ curl https://dom4in.net/api/stats/overview
 
           const barEl = document.createElement('div');
           barEl.className = 'word-chart-bar';
-
-          const segUnreg = document.createElement('div');
-          segUnreg.className = 'length-chart-seg-unreg';
-          segUnreg.style.width = unregPctAll.toFixed(2) + '%';
-
-          const segUnused = document.createElement('div');
-          segUnused.className = 'length-chart-seg-unused';
-          segUnused.style.width = unusedPctAll.toFixed(2) + '%';
-
-          const segOther = document.createElement('div');
-          segOther.className = 'length-chart-seg-other';
-          segOther.style.width = otherPctAll.toFixed(2) + '%';
-
-          barEl.appendChild(segUnreg);
-          barEl.appendChild(segUnused);
-          barEl.appendChild(segOther);
+          const s1 = document.createElement('div'); s1.className = 'length-chart-seg-unreg';  s1.style.width = unregPctAll.toFixed(2) + '%';
+          const s2 = document.createElement('div'); s2.className = 'length-chart-seg-unused'; s2.style.width = unusedPctAll.toFixed(2) + '%';
+          const s3 = document.createElement('div'); s3.className = 'length-chart-seg-other';  s3.style.width = otherPctAll.toFixed(2) + '%';
+          barEl.appendChild(s1); barEl.appendChild(s2); barEl.appendChild(s3);
           rowEl.appendChild(barEl);
 
           const pctLabel = document.createElement('div');
@@ -642,7 +650,6 @@ curl https://dom4in.net/api/stats/overview
           pctLabel.style.textAlign = 'right';
           pctLabel.textContent = `Unreg ${unregPctAll.toFixed(1)}% • Unused ${unusedPctAll.toFixed(1)}% • Active ${otherPctAll.toFixed(1)}%`;
           rowEl.appendChild(pctLabel);
-
           overallEl.appendChild(rowEl);
 
           const posCounts = order
@@ -655,15 +662,14 @@ curl https://dom4in.net/api/stats/overview
             .join(', ');
 
           summaryEl.innerHTML = `
-            Across all word-based labels, we have run <strong>${totalTrackedWords.toLocaleString()}</strong>
-            domain searches so far. Of these, roughly
-            <strong>${unregPctAll.toFixed(1)}%</strong> appeared unregistered (no DNS) and
+            Across all word-based labels, <strong>${totalTracked.toLocaleString()}</strong> domain checks have run.
+            Roughly <strong>${unregPctAll.toFixed(1)}%</strong> appeared unregistered and
             <strong>${unusedPctAll.toFixed(1)}%</strong> were registered but unused/parked.
             Per part of speech: ${posCounts || 'n/a'}.
           `;
         }
 
-        wordStatusEl.textContent = 'Word-based stats loaded.';
+        wordStatusEl.textContent = '';
       } catch (err) {
         console.error(err);
         wordStatusEl.textContent = 'Failed to load word-based stats.';
