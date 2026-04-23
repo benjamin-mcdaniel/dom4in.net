@@ -1,0 +1,57 @@
+name: Collector
+
+# Scheduled short-mode collector runs.
+#
+# Cadence: 3x/day at 06:00, 14:00, 22:00 UTC.
+# Also exposed as workflow_dispatch for smoke tests and one-off reruns.
+#
+# Required repo secret: ADMIN_API_KEY (the same value configured on the
+# Worker as the admin key binding). API_BASE defaults to the production
+# site; override via workflow_dispatch input if you want to target a
+# staging Worker.
+
+on:
+  schedule:
+    - cron: '0 6,14,22 * * *'
+  workflow_dispatch:
+    inputs:
+      max_duration:
+        description: 'Max wall-clock seconds for this run (0 = unlimited)'
+        required: false
+        default: '2400'
+      api_base:
+        description: 'Override API base URL'
+        required: false
+        default: 'https://dom4in.net'
+
+# Prevent overlapping runs — if one is still going when the next tick
+# fires, the queued run waits instead of stepping on pointer state.
+concurrency:
+  group: collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    # Budget is collector max-duration (40m) + upload/setup overhead.
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run collector (short mode)
+        env:
+          API_BASE: ${{ github.event.inputs.api_base || 'https://dom4in.net' }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+          COLLECTOR_CLOUD_STATE: '1'
+          COLLECTOR_SOURCE: github-actions
+          COLLECTOR_MAX_DURATION: ${{ github.event.inputs.max_duration || '2400' }}
+        run: |
+          python collector/collector.py --short --pause 1 --workers 4

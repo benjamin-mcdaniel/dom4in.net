@@ -4,15 +4,31 @@ import os
 import random
 import socket
 import ssl
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
+
+# ---------------------------------------------------------------------------
+# Cloud-state toggle.
+#
+# When enabled, Pointer state (and the words pointer) is read/written via
+# the Worker's /api/admin/state endpoint instead of local JSON files. Turned
+# on by either the --cloud-state CLI flag or COLLECTOR_CLOUD_STATE=1 env var.
+# main() populates this dict before Pointer.load() is called.
+# ---------------------------------------------------------------------------
+_CLOUD_STATE = {
+    "enabled": False,
+    "api_base": "",
+    "api_key": "",
+}
 
 BASE_DIR = os.path.dirname(__file__)
 POINTER_FILE = os.path.join(BASE_DIR, "state_pointer.json")
@@ -85,16 +101,44 @@ class Pointer:
         ]
 
     def save(self) -> None:
+        # Cloud mode: push the pointer to the Worker's state endpoint. We
+        # still mirror to the local file if the write fails, so progress is
+        # not lost to an API blip.
+        if _CLOUD_STATE["enabled"]:
+            ok = put_cloud_state(
+                _CLOUD_STATE["api_base"],
+                _CLOUD_STATE["api_key"],
+                "short_pointer",
+                asdict(self),
+            )
+            if ok:
+                return
+            # Fall through to local write as a cache
         with open(POINTER_FILE, "w", encoding="utf-8") as f:
             json.dump(asdict(self), f, indent=2)
 
     @classmethod
     def load(cls) -> "Pointer":
-        if not os.path.exists(POINTER_FILE):
-            ptr = cls()
+        data = None
+        # Cloud mode: prefer the remote pointer. If it's missing, fall back
+        # to any local file (useful when migrating from local→cloud).
+        if _CLOUD_STATE["enabled"]:
+            remote = get_cloud_state(
+                _CLOUD_STATE["api_base"],
+                _CLOUD_STATE["api_key"],
+                "short_pointer",
+            )
+            if isinstance(remote, dict):
+                data = remote
+
+        if data is None:
+            if not os.path.exists(POINTER_FILE):
+                ptr = cls()
+            else:
+                with open(POINTER_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                ptr = cls(**data)
         else:
-            with open(POINTER_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
             ptr = cls(**data)
 
         # Migrate older pointer state to per-length tracking if needed
@@ -560,7 +604,12 @@ def update_aggregates(
                 wps["unused_found"] += 1
 
 
-def build_payload(date_str: str, aggr: Dict) -> Dict:
+def build_payload(
+    date_str: str,
+    aggr: Dict,
+    run_id: Optional[str] = None,
+    batch_id: Optional[str] = None,
+) -> Dict:
     length_stats_list = sorted(aggr["length_stats"].values(), key=lambda x: x["length"])
     length_stats_by_tld_list = sorted(
         aggr["length_stats_by_tld"].values(),
@@ -579,6 +628,13 @@ def build_payload(date_str: str, aggr: Dict) -> Dict:
         "length_stats_by_tld": length_stats_by_tld_list,
         "word_pos_stats": word_pos_stats_list,
     }
+
+    # Idempotency keys: Worker rejects a replay of the same (run_id, batch_id).
+    # Omitted when run_id is unknown (e.g. one-off local dry runs).
+    if run_id:
+        payload["run_id"] = run_id
+    if batch_id:
+        payload["batch_id"] = batch_id
 
     return payload
 
@@ -625,6 +681,88 @@ def upload_aggregate(api_base: str, api_key: str, payload: Dict, dry_run: bool =
         return 0, str(e)
 
 
+# ---------------------------------------------------------------------------
+# Structured logging (one JSON line per event, stdout).
+#
+# Free-form print() is kept for human-readable per-block summaries; log_json
+# adds machine-parseable events (start/finish/upload/error) so GHA logs and
+# any future log shipper can grep meaningful fields. Failures in log_json are
+# swallowed — logging must never take down a run.
+# ---------------------------------------------------------------------------
+def log_json(event: str, **fields) -> None:
+    try:
+        record = {"ts": datetime.now(timezone.utc).isoformat(), "event": event}
+        record.update(fields)
+        sys.stdout.write(json.dumps(record, default=str) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Admin HTTP helpers — state + runs endpoints.
+# ---------------------------------------------------------------------------
+def _admin_request(method: str, url: str, api_key: str, body: Optional[Dict] = None, timeout: int = 10) -> Tuple[int, str]:
+    data = None
+    headers = {
+        "x-admin-api-key": api_key,
+        "User-Agent": "dom4in-collector/1.0",
+    }
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8", errors="ignore")
+            return resp.status, text
+    except urllib.error.HTTPError as e:
+        text = e.read().decode("utf-8", errors="ignore")
+        return e.code, text
+    except urllib.error.URLError as e:
+        return 0, str(e)
+
+
+def get_cloud_state(api_base: str, api_key: str, key: str) -> Optional[Dict]:
+    """Fetch an opaque JSON value stored under `key`. Returns the parsed value,
+    or None if missing / unreachable. Caller decides whether a missing key
+    means 'start fresh' or 'fail'."""
+    url = f"{api_base.rstrip('/')}/api/admin/state?key={urllib.parse.quote(key)}"
+    status, text = _admin_request("GET", url, api_key)
+    if status != 200:
+        log_json("state_get_failed", key=key, status=status, body=text[:200])
+        return None
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return None
+    value = payload.get("value")
+    return value if isinstance(value, dict) else None
+
+
+def put_cloud_state(api_base: str, api_key: str, key: str, value: Dict) -> bool:
+    url = f"{api_base.rstrip('/')}/api/admin/state"
+    status, text = _admin_request("PUT", url, api_key, {"key": key, "value": value})
+    if status != 200:
+        log_json("state_put_failed", key=key, status=status, body=text[:200])
+        return False
+    return True
+
+
+def post_run_event(api_base: str, api_key: str, run_id: str, event: str, **fields) -> bool:
+    """Record a run lifecycle event. Best-effort; never raises."""
+    if not api_base or not api_key or not run_id:
+        return False
+    url = f"{api_base.rstrip('/')}/api/admin/runs"
+    body = {"run_id": run_id, "event": event}
+    body.update({k: v for k, v in fields.items() if v is not None})
+    status, text = _admin_request("POST", url, api_key, body)
+    ok = status == 200
+    if not ok:
+        log_json("runs_event_failed", run_id=run_id, event=event, status=status, body=text[:200])
+    return ok
+
+
 def reset_db(api_base: str, api_key: str) -> None:
     """Call the admin reset endpoint to clear aggregated stats in D1."""
     url = f"{api_base.rstrip('/')}/api/admin/reset-stats"
@@ -666,7 +804,24 @@ def run(
     use_words: bool = False,
     block_pause_seconds: int = 0,
     workers: int = 0,
-) -> None:
+    run_id: Optional[str] = None,
+    max_duration_seconds: int = 0,
+) -> Dict:
+    """Main collection loop.
+
+    Returns a small summary dict used by main() to post the finish event:
+    { 'domains_processed', 'errors_count', 'blocks', 'upload_failures',
+      'timed_out', 'status' }.
+    """
+    run_started_monotonic = time.monotonic()
+    summary = {
+        "domains_processed": 0,
+        "errors_count": 0,
+        "blocks": 0,
+        "upload_failures": 0,
+        "timed_out": False,
+        "status": "success",
+    }
     pointer = Pointer.load()
     word_pointer = WordPointer.load()
 
@@ -748,6 +903,21 @@ def run(
     next_length_rr_index = 0
 
     while True:
+        # Hard wall-clock bound. We check at the start of each block so the
+        # current block either runs to completion (and uploads its partial
+        # aggregates) or doesn't start at all. The collector therefore exits
+        # cleanly with progress saved, instead of being SIGKILLed mid-upload
+        # by the GHA job timeout.
+        if max_duration_seconds > 0 and (time.monotonic() - run_started_monotonic) >= max_duration_seconds:
+            summary["timed_out"] = True
+            log_json(
+                "timeout_reached",
+                max_duration_seconds=max_duration_seconds,
+                blocks_completed=summary["blocks"],
+            )
+            print(f"[timeout] Reached max duration of {max_duration_seconds}s; stopping cleanly.")
+            break
+
         block_index += 1
         # Start fresh aggregates for this block
         aggr = init_aggregates()
@@ -907,7 +1077,8 @@ def run(
 
         # Build and upload payload for this block
         date_str = datetime.now(timezone.utc).date().isoformat()
-        payload = build_payload(date_str, aggr)
+        batch_id = str(uuid.uuid4())
+        payload = build_payload(date_str, aggr, run_id=run_id, batch_id=batch_id)
 
         length_stats_list = payload.get("length_stats", [])
         total_tracked_block = sum(ls.get("tracked_count", 0) for ls in length_stats_list)
@@ -920,6 +1091,27 @@ def run(
                 length_breakdown_parts.append(f"L{length_val}={tracked_val}")
         length_breakdown = ", ".join(length_breakdown_parts) if length_breakdown_parts else "none"
         status_code, body_text = upload_aggregate(api_base, api_key, payload, dry_run=dry_run)
+
+        # Track block-level summary so main() can post a meaningful finish event.
+        summary["blocks"] += 1
+        summary["domains_processed"] += batch_size_for_block
+        if not dry_run and status_code != 200:
+            summary["upload_failures"] += 1
+            log_json(
+                "upload_failed",
+                block=block_index,
+                batch_id=batch_id,
+                status=status_code,
+                body=body_text[:200],
+            )
+        else:
+            log_json(
+                "upload_ok",
+                block=block_index,
+                batch_id=batch_id,
+                domains=batch_size_for_block,
+                length_stats_domains=total_tracked_block,
+            )
 
         # Simple console summary for the block
         if mode_for_block == "short":
@@ -944,11 +1136,18 @@ def run(
         if use_short and use_words:
             next_mode = "words" if mode_for_block == "short" else "short"
 
+    # Loop exited. Decide overall status from counters.
+    if summary["upload_failures"] > 0 or summary["timed_out"]:
+        summary["status"] = "partial"
+    else:
+        summary["status"] = "success"
+    return summary
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="dom4in.net collector")
-    parser.add_argument("--api-base", type=str, default=None, help="Base URL for the backend API (overrides config file)")
-    parser.add_argument("--api-key", type=str, default=None, help="Admin API key for upload (overrides config file)")
+    parser.add_argument("--api-base", type=str, default=None, help="Base URL for the backend API (overrides config file and env API_BASE)")
+    parser.add_argument("--api-key", type=str, default=None, help="Admin API key for upload (overrides config file and env ADMIN_API_KEY)")
     parser.add_argument("--dry-run", action="store_true", help="Do not POST to backend, just print payload")
     parser.add_argument("--print-each", action="store_true", help="Print each domain and its classification as it is processed")
     parser.add_argument("--reset-pointer", action="store_true", help="Reset pointer to the beginning and exit")
@@ -958,6 +1157,10 @@ def main() -> None:
     parser.add_argument("--pause", type=int, default=None, help="Optional pause in seconds between blocks when running continuously")
     parser.add_argument("--workers", type=int, default=None, help="Optional number of worker threads for DNS/HTTP checks (0 = single-threaded)")
     parser.add_argument("--config-file", type=str, default=None, help="Optional path to a JSON config file (overrides default collector/config.local.json)")
+    parser.add_argument("--max-duration", type=int, default=None, help="Max wall-clock seconds before the collector stops cleanly (0 = no limit). Also honors env COLLECTOR_MAX_DURATION.")
+    parser.add_argument("--run-id", type=str, default=None, help="Explicit run UUID. A fresh one is generated if omitted.")
+    parser.add_argument("--source", type=str, default=None, help="Where this run was launched from (e.g. 'local', 'github-actions'). Stored in the runs table.")
+    parser.add_argument("--cloud-state", action="store_true", help="Read/write collector state via the Worker /api/admin/state endpoint instead of local JSON files. Also honors env COLLECTOR_CLOUD_STATE=1.")
 
     args = parser.parse_args()
 
@@ -971,8 +1174,17 @@ def main() -> None:
         except Exception as e:
             print(f"Warning: failed to read config from {config_path}: {e}")
 
-    api_base = args.api_base or config.get("api_base", "https://dom4in.net")
-    api_key = args.api_key or config.get("admin_api_key", "")
+    # Precedence: CLI > env > config file > default.
+    api_base = (
+        args.api_base
+        or os.environ.get("API_BASE")
+        or config.get("api_base", "https://dom4in.net")
+    )
+    api_key = (
+        args.api_key
+        or os.environ.get("ADMIN_API_KEY")
+        or config.get("admin_api_key", "")
+    )
 
     cfg_block_pause = int(config.get("block_pause_seconds", 0)) if config else 0
     cfg_workers = int(config.get("worker_count", 0)) if config else 0
@@ -986,12 +1198,34 @@ def main() -> None:
     else:
         workers = max(0, cfg_workers)
 
+    # Cloud-state mode: CLI flag OR env var flips it on. Populating the
+    # module-level _CLOUD_STATE dict is what tells Pointer.save/load to use
+    # HTTP instead of local files.
+    env_cloud_state = os.environ.get("COLLECTOR_CLOUD_STATE", "").strip() in ("1", "true", "True", "yes")
+    cloud_state_enabled = bool(args.cloud_state or env_cloud_state)
+    if cloud_state_enabled:
+        if not api_key:
+            print("Error: --cloud-state requires ADMIN_API_KEY.")
+            sys.exit(2)
+        _CLOUD_STATE["enabled"] = True
+        _CLOUD_STATE["api_base"] = api_base
+        _CLOUD_STATE["api_key"] = api_key
+
+    # Max duration: CLI beats env beats default (0 = unlimited).
+    if args.max_duration is not None:
+        max_duration_seconds = max(0, args.max_duration)
+    else:
+        try:
+            max_duration_seconds = max(0, int(os.environ.get("COLLECTOR_MAX_DURATION", "0") or "0"))
+        except ValueError:
+            max_duration_seconds = 0
+
+    # Handle reset flows first — they short-circuit the run lifecycle.
     if args.reset_db:
         if not api_key:
             print("Error: admin API key is required to reset DB.")
-            return
+            sys.exit(2)
         reset_db(api_base, api_key)
-        # Optionally also reset pointer in the same 1-liner
         if args.reset_pointer:
             reset_pointer()
         return
@@ -1001,19 +1235,79 @@ def main() -> None:
         return
 
     if not api_key:
-        print("Error: admin API key is required. Set it in collector/config.local.json or pass --api-key.")
-        return
+        print("Error: admin API key is required. Set it in collector/config.local.json, pass --api-key, or set ADMIN_API_KEY in env.")
+        sys.exit(2)
 
-    run(
-        api_base,
-        api_key,
-        dry_run=args.dry_run,
-        print_each=args.print_each,
-        use_short=args.short,
-        use_words=args.word,
-        block_pause_seconds=block_pause_seconds,
-        workers=workers,
+    # Lifecycle: generate a run_id, post `start`, run, then always post `finish`.
+    # Exit code conventions: 0 clean, 1 partial (timeout / some upload failed),
+    # 2 total failure (start couldn't be posted, config error).
+    run_id = args.run_id or str(uuid.uuid4())
+    source = args.source or os.environ.get("COLLECTOR_SOURCE") or "local"
+
+    log_json(
+        "run_start",
+        run_id=run_id,
+        source=source,
+        api_base=api_base,
+        cloud_state=cloud_state_enabled,
+        max_duration_seconds=max_duration_seconds,
+        use_short=bool(args.short),
+        use_words=bool(args.word),
+        dry_run=bool(args.dry_run),
     )
+
+    start_posted = False
+    if not args.dry_run:
+        start_posted = post_run_event(
+            api_base,
+            api_key,
+            run_id,
+            "start",
+            source=source,
+            notes=f"collector source={source} cloud_state={cloud_state_enabled}",
+        )
+
+    summary = {"status": "failed", "domains_processed": 0, "errors_count": 0}
+    exit_code = 0
+    try:
+        summary = run(
+            api_base,
+            api_key,
+            dry_run=args.dry_run,
+            print_each=args.print_each,
+            use_short=args.short,
+            use_words=args.word,
+            block_pause_seconds=block_pause_seconds,
+            workers=workers,
+            run_id=run_id,
+            max_duration_seconds=max_duration_seconds,
+        ) or summary
+        if summary.get("status") != "success":
+            exit_code = 1
+    except KeyboardInterrupt:
+        summary["status"] = "partial"
+        summary["notes"] = "interrupted"
+        exit_code = 1
+    except Exception as e:
+        summary["status"] = "failed"
+        summary["notes"] = f"unhandled: {e!r}"
+        log_json("run_exception", run_id=run_id, error=repr(e))
+        exit_code = 2
+    finally:
+        if not args.dry_run and start_posted:
+            post_run_event(
+                api_base,
+                api_key,
+                run_id,
+                "finish",
+                status=summary.get("status", "failed"),
+                domains_processed=int(summary.get("domains_processed", 0)),
+                errors_count=int(summary.get("errors_count", 0)),
+                notes=summary.get("notes"),
+            )
+        log_json("run_finish", run_id=run_id, summary=summary, exit_code=exit_code)
+
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

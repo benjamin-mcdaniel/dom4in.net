@@ -361,6 +361,49 @@ Requires GitHub Secrets:
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
 
+### Collector (GitHub Actions, scheduled)
+
+Workflow: `.github/workflows/collector.yml`.
+
+- Trigger: cron `0 6,14,22 * * *` (3x/day UTC) + `workflow_dispatch`.
+- Concurrency group `collector` with `cancel-in-progress: false` – if a run is
+  still in flight when the next tick fires, the new one waits.
+- `timeout-minutes: 50` in GHA wraps the collector's own `--max-duration 2400`
+  (40min) so the job always exits cleanly, with the last block uploaded.
+- Runs short mode only: `python collector/collector.py --short --pause 1 --workers 4`.
+
+Environment wiring:
+
+- `API_BASE` – defaults to `https://dom4in.net`, overridable via `workflow_dispatch` input.
+- `ADMIN_API_KEY` – from repo secret of the same name.
+- `COLLECTOR_CLOUD_STATE=1` – pointer state is read/written via
+  `POST /api/admin/state` against the Worker, so GHA runners are stateless
+  and still resume where the previous run left off.
+- `COLLECTOR_SOURCE=github-actions` – tagged on each `runs` row for auditing.
+- `COLLECTOR_MAX_DURATION=2400` – wall-clock cap, overridable per dispatch.
+
+#### Required repo secret
+
+`ADMIN_API_KEY` must be added under **Settings → Secrets and variables → Actions**.
+Use the same value that is configured on the `dom4in-backend` Worker. Without
+it the job fails fast before hitting any endpoint.
+
+#### First-run smoke test
+
+Before relying on the cron schedule, run the workflow manually:
+
+1. Go to **Actions → Collector → Run workflow**.
+2. Leave the defaults (`max_duration=2400`, `api_base=https://dom4in.net`).
+3. Confirm in the logs that you see `run_start`, at least one `upload_ok`,
+   and a final `run_finish` with `status=success`.
+4. `GET https://dom4in.net/api/stats/overview` should report an updated
+   `last_updated_at` and a recent `last_run_at` / `last_run_status=success`.
+
+If the first run times out mid-block, that's fine — the next scheduled
+run picks up the pointer from D1 and continues. The idempotency key
+`(run_id, batch_id)` prevents any duplicate block from being re-applied
+if GHA retries a step.
+
 ### Routes
 
 In Cloudflare dashboard, configure a route:
