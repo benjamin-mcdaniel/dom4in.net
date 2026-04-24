@@ -93,33 +93,36 @@
     /* Per-TLD small multiples — one mini-chart per TLD */
     .tld-multiples {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-      gap: 0.6rem;
-      margin-top: 0.25rem;
+      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+      gap: 0.75rem;
+      margin-top: 0.5rem;
     }
     .tld-mini-card {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 0.5rem;
-      padding: 0.55rem 0.65rem;
+      padding: 0.65rem 0.75rem;
     }
     .tld-mini-head {
       display: flex; justify-content: space-between; align-items: baseline;
-      font-size: 0.78rem; margin-bottom: 0.35rem;
+      font-size: 0.8rem; margin-bottom: 0.4rem;
     }
     .tld-mini-name {
       font-weight: 600; color: var(--text); text-transform: lowercase;
       font-variant-numeric: tabular-nums;
     }
     .tld-mini-max {
-      font-size: 0.68rem; color: var(--muted);
+      font-size: 0.7rem; color: var(--muted);
       font-variant-numeric: tabular-nums;
     }
-    .tld-mini-svg { width: 100%; height: 44px; display: block; }
-    .tld-mini-svg .area { fill: var(--accent-unused); fill-opacity: 0.18; }
+    .tld-mini-svg { width: 100%; height: 90px; display: block; }
+    .tld-mini-svg .area { fill: var(--accent-unused); fill-opacity: 0.15; }
     .tld-mini-svg .line { fill: none; stroke: var(--accent-unused); stroke-width: 1.5; }
     .tld-mini-svg .dot  { fill: var(--accent-unused); cursor: crosshair; }
     .tld-mini-svg .dot:hover { fill: var(--accent-active); }
+    .tld-mini-svg .axis { stroke: #1f2937; stroke-width: 1; }
+    .tld-mini-svg .gridline { stroke: #1f2937; stroke-width: 0.5; stroke-dasharray: 2,3; }
+    .tld-mini-svg .axis-label { fill: #6b7280; font-size: 7.5px; font-family: system-ui, sans-serif; }
     .legend-item { display: inline-flex; align-items: center; gap: 0.25rem; }
     .legend-swatch { width: 0.7rem; height: 0.7rem; border-radius: 999px; }
     table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.88rem; }
@@ -180,24 +183,10 @@
     </section>
 
     <section id="short-domains">
-      <h2>Short domains (1–10 chars)</h2>
-      <div class="vis-row">
-        <div>
-          <p>Average share of vacant, parked, and active results across 1–10 character labels.</p>
-          <div id="length-charts" class="length-chart-grid"></div>
-          <div class="length-chart-legend">
-            <span class="legend-item"><span class="legend-swatch" style="background:#6b7280;"></span>Unregistered (no DNS)</span>
-            <span class="legend-item"><span class="legend-swatch" style="background:#eab308;"></span>Registered, unused/parked</span>
-            <span class="legend-item"><span class="legend-swatch" style="background:#22c55e;"></span>Active / other response</span>
-          </div>
-        </div>
-        <div>
-          <p>Unregistered share by length (1–10) for each TLD. Hover any point for details.</p>
-          <div id="tld-length-chart"></div>
-          <div id="tld-length-legend" class="muted" style="margin-top: 0.4rem;"></div>
-          <div id="tld-length-status" class="muted" style="margin-top: 0.5rem;"></div>
-        </div>
-      </div>
+      <h2>Short domains — unregistered % by length &amp; TLD</h2>
+      <p class="muted" style="margin-top: 0.25rem;">Unregistered share across label lengths 1–10. Hover any point for exact figures.</p>
+      <div id="tld-length-chart"></div>
+      <div id="tld-length-status" class="muted" style="margin-top: 0.5rem;"></div>
 
       <table>
         <thead>
@@ -281,7 +270,14 @@
         return;
       }
 
-      const d = new Date(freshnessState.lastRunAt);
+      // SQLite datetime('now') returns "YYYY-MM-DD HH:MM:SS" with no timezone
+      // marker. JS Date() treats bare strings as local time, not UTC, so dates
+      // from the DB appear hours in the future for users west of UTC.
+      // Normalize to ISO 8601 UTC before parsing.
+      let raw = freshnessState.lastRunAt;
+      if (raw && !raw.includes('T')) raw = raw.replace(' ', 'T');
+      if (raw && !raw.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(raw)) raw += 'Z';
+      const d = new Date(raw);
       if (isNaN(d.getTime())) {
         el.dataset.state = 'unknown';
         text.textContent = 'Last updated: unknown';
@@ -333,14 +329,10 @@
         startFreshnessTicker(freshAt, data.last_run_status || null);
 
         const tbody = document.getElementById('length-table-body');
-        const chartsEl = document.getElementById('length-charts');
         const tldChartEl = document.getElementById('tld-length-chart');
-        const tldLegendEl = document.getElementById('tld-length-legend');
         const tldStatusEl = document.getElementById('tld-length-status');
         tbody.innerHTML = '';
-        chartsEl.innerHTML = '';
         if (tldChartEl) tldChartEl.innerHTML = '';
-        if (tldLegendEl) tldLegendEl.innerHTML = '';
         if (tldStatusEl) tldStatusEl.textContent = '';
 
         const lengthRows = data.letter_length_counts || [];
@@ -365,80 +357,37 @@
           sumUnregistered += row.unregistered_found || 0;
           sumUnused += row.unused_found || 0;
 
-          const totalForLength = row.tracked || 0;
-          if (totalForLength > 0) {
-            const unregPctLen = (row.unregistered_found / totalForLength) * 100;
-            const unusedPctLen = (row.unused_found / totalForLength) * 100;
-            const otherPctLen = Math.max(0, 100 - unregPctLen - unusedPctLen);
-
-            const rowEl = document.createElement('div');
-            rowEl.className = 'length-chart-row';
-
-            const labelEl = document.createElement('div');
-            labelEl.className = 'length-chart-label';
-            labelEl.textContent = row.length;
-            rowEl.appendChild(labelEl);
-
-            const barEl = document.createElement('div');
-            barEl.className = 'length-chart-bar';
-
-            const segUnreg = document.createElement('div');
-            segUnreg.className = 'length-chart-seg-unreg';
-            segUnreg.style.width = unregPctLen.toFixed(2) + '%';
-
-            const segUnused = document.createElement('div');
-            segUnused.className = 'length-chart-seg-unused';
-            segUnused.style.width = unusedPctLen.toFixed(2) + '%';
-
-            const segOther = document.createElement('div');
-            segOther.className = 'length-chart-seg-other';
-            segOther.style.width = otherPctLen.toFixed(2) + '%';
-
-            barEl.appendChild(segUnreg);
-            barEl.appendChild(segUnused);
-            barEl.appendChild(segOther);
-            rowEl.appendChild(barEl);
-
-            const pctLabel = document.createElement('div');
-            pctLabel.style.minWidth = '8rem';
-            pctLabel.style.width = '8.5rem';
-            pctLabel.style.flex = '0 0 8.5rem';
-            pctLabel.style.textAlign = 'right';
-            pctLabel.textContent = `${unregPctLen.toFixed(1)}% / ${unusedPctLen.toFixed(1)}% / ${otherPctLen.toFixed(1)}%`;
-            rowEl.appendChild(pctLabel);
-
-            chartsEl.appendChild(rowEl);
-          }
         });
 
-        // Per-TLD small multiples: one mini-chart per TLD, unregistered %
-        // across lengths 1–10. Each card scales to its own max so low-%
-        // TLDs don't get flattened by high-% ones. Native SVG <title>
-        // gives a browser tooltip on hover — no JS event wiring needed.
-        if (tldChartEl && tldLegendEl && tldStatusEl) {
-          tldLegendEl.innerHTML = '';
+        // Per-TLD small multiples — unregistered % by label length (1–10).
+        // Each card has its own Y scale. Axes: X = label length, Y = unregistered %.
+        if (tldChartEl && tldStatusEl) {
           if (!tldLengthRows.length) {
             tldStatusEl.textContent = 'Per-TLD length stats are not available yet.';
           } else {
             tldStatusEl.textContent = '';
             const byTld = {};
             tldLengthRows.forEach(row => {
-              const tld = row.tld;
-              if (!byTld[tld]) byTld[tld] = {};
+              if (!byTld[row.tld]) byTld[row.tld] = {};
               const tracked = row.tracked || 0;
               const unreg = row.unregistered_found || 0;
-              const pct = tracked > 0 ? (unreg / tracked) * 100 : null;
-              byTld[tld][row.length] = { pct, tracked, unreg };
+              byTld[row.tld][row.length] = { pct: tracked > 0 ? (unreg / tracked) * 100 : null, tracked, unreg };
             });
 
             const allTlds = Object.keys(byTld).sort();
             const grid = document.createElement('div');
             grid.className = 'tld-multiples';
 
-            allTlds.forEach(tld => {
-              const card = document.createElement('div');
-              card.className = 'tld-mini-card';
+            // SVG layout constants
+            const vW = 220, vH = 100;
+            const padL = 34, padR = 6, padT = 8, padB = 22;
+            const plotW = vW - padL - padR;
+            const plotH = vH - padT - padB;
+            const xFor = L => padL + ((L - 1) / 9) * plotW;
+            const yFor = (pct, yMax) => padT + plotH - (pct / yMax) * plotH;
+            const baseline = padT + plotH;
 
+            allTlds.forEach(tld => {
               const points = [];
               let localMax = 0;
               for (let L = 1; L <= 10; L++) {
@@ -446,55 +395,70 @@
                 points.push({ length: L, ...v });
                 if (v.pct != null && v.pct > localMax) localMax = v.pct;
               }
-              // Round the y-axis ceiling up to the next 10% so the line has headroom.
               const yMax = Math.max(10, Math.ceil(localMax / 10) * 10);
+              const yMid = yMax / 2;
+
+              const card = document.createElement('div');
+              card.className = 'tld-mini-card';
 
               const head = document.createElement('div');
               head.className = 'tld-mini-head';
               head.innerHTML =
                 '<span class="tld-mini-name">.' + tld + '</span>' +
-                '<span class="tld-mini-max">max ' + yMax + '% unreg</span>';
+                '<span class="tld-mini-max">% unregistered</span>';
               card.appendChild(head);
 
-              const w = 150, h = 44, padX = 4, padY = 4;
-              const plotW = w - padX * 2, plotH = h - padY * 2;
-              const xFor = i => padX + (i / 9) * plotW;
-              const yFor = pct => padY + plotH - (pct / yMax) * plotH;
-
               const valid = points.filter(p => p.pct != null);
-              const pathD = valid.map((p, i) => {
-                const x = xFor(p.length - 1).toFixed(1);
-                const y = yFor(p.pct).toFixed(1);
-                return (i === 0 ? 'M' : 'L') + x + ',' + y;
-              }).join(' ');
+              const pathD = valid.map((p, i) =>
+                (i === 0 ? 'M' : 'L') + xFor(p.length).toFixed(1) + ',' + yFor(p.pct, yMax).toFixed(1)
+              ).join(' ');
               const areaD = valid.length
                 ? pathD +
-                  ' L' + xFor(valid[valid.length - 1].length - 1).toFixed(1) + ',' + (padY + plotH).toFixed(1) +
-                  ' L' + xFor(valid[0].length - 1).toFixed(1) + ',' + (padY + plotH).toFixed(1) + ' Z'
+                  ' L' + xFor(valid[valid.length - 1].length).toFixed(1) + ',' + baseline +
+                  ' L' + xFor(valid[0].length).toFixed(1) + ',' + baseline + ' Z'
                 : '';
 
-              const svgParts = [];
-              if (areaD) svgParts.push('<path class="area" d="' + areaD + '"/>');
-              if (pathD) svgParts.push('<path class="line" d="' + pathD + '"/>');
+              const parts = [];
+
+              // Horizontal gridlines at 0, mid, max
+              [0, yMid, yMax].forEach(tick => {
+                const y = yFor(tick, yMax).toFixed(1);
+                parts.push('<line class="gridline" x1="' + padL + '" x2="' + (vW - padR) + '" y1="' + y + '" y2="' + y + '"/>');
+              });
+
+              // Y axis labels
+              parts.push('<text class="axis-label" x="' + (padL - 3) + '" y="' + (yFor(yMax, yMax) + 3).toFixed(1) + '" text-anchor="end">' + yMax + '%</text>');
+              parts.push('<text class="axis-label" x="' + (padL - 3) + '" y="' + (yFor(yMid, yMax) + 3).toFixed(1) + '" text-anchor="end">' + yMid.toFixed(0) + '%</text>');
+              parts.push('<text class="axis-label" x="' + (padL - 3) + '" y="' + (baseline + 1) + '" text-anchor="end">0%</text>');
+
+              // X axis tick labels: 1, 3, 5, 7, 10
+              [1, 3, 5, 7, 10].forEach(L => {
+                parts.push('<text class="axis-label" x="' + xFor(L).toFixed(1) + '" y="' + (vH - 9) + '" text-anchor="middle">' + L + '</text>');
+              });
+
+              // X axis title
+              parts.push('<text class="axis-label" x="' + (padL + plotW / 2).toFixed(1) + '" y="' + (vH - 1) + '" text-anchor="middle" style="font-size:6.5px">label length</text>');
+
+              // Axis lines
+              parts.push('<line class="axis" x1="' + padL + '" x2="' + padL + '" y1="' + padT + '" y2="' + baseline + '"/>');
+              parts.push('<line class="axis" x1="' + padL + '" x2="' + (vW - padR) + '" y1="' + baseline + '" y2="' + baseline + '"/>');
+
+              // Data area, line, dots
+              if (areaD) parts.push('<path class="area" d="' + areaD + '"/>');
+              if (pathD) parts.push('<path class="line" d="' + pathD + '"/>');
               points.forEach(p => {
                 if (p.pct == null) return;
-                const cx = xFor(p.length - 1).toFixed(1);
-                const cy = yFor(p.pct).toFixed(1);
-                const pctTxt = p.pct.toFixed(1);
-                const title = '.' + tld + ' · length ' + p.length + ' · ' +
-                              pctTxt + '% unregistered · ' +
-                              p.tracked.toLocaleString() + ' tracked';
-                svgParts.push(
-                  '<circle class="dot" cx="' + cx + '" cy="' + cy + '" r="2.2">' +
-                  '<title>' + title + '</title></circle>'
-                );
+                const cx = xFor(p.length).toFixed(1);
+                const cy = yFor(p.pct, yMax).toFixed(1);
+                const tip = '.' + tld + ' · len ' + p.length + ' · ' + p.pct.toFixed(1) + '% unregistered · ' + p.tracked.toLocaleString() + ' checked';
+                parts.push('<circle class="dot" cx="' + cx + '" cy="' + cy + '" r="2.5"><title>' + tip + '</title></circle>');
               });
 
               const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-              svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
-              svg.setAttribute('preserveAspectRatio', 'none');
+              svg.setAttribute('viewBox', '0 0 ' + vW + ' ' + vH);
+              svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
               svg.classList.add('tld-mini-svg');
-              svg.innerHTML = svgParts.join('');
+              svg.innerHTML = parts.join('');
               card.appendChild(svg);
               grid.appendChild(card);
             });
