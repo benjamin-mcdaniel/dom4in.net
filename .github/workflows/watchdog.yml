@@ -1,0 +1,111 @@
+name: Watchdog
+
+# Daily health check against the public /api/health endpoint.
+# The Worker does the actual DB freshness logic (last run age, data freshness,
+# etc.) and returns 200 + ok:true when healthy, 503 + ok:false when degraded.
+# This workflow only knows: hit URL, parse json, fail if not ok, open issue.
+#
+# Cross-project pattern: drop this file into any project that exposes a
+# /api/health endpoint with the same { ok, status, checks[] } shape.
+# Only the HEALTH_URL env value should change between projects.
+
+on:
+  schedule:
+    - cron: '30 23 * * *'  # daily at 23:30 UTC, after the 22:00 collector run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  HEALTH_URL: https://dom4in.net/api/health
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe /api/health
+        id: probe
+        run: |
+          set +e
+          response=$(curl -sS --max-time 20 -w '\n%{http_code}' "$HEALTH_URL")
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "code=000" >> "$GITHUB_OUTPUT"
+            {
+              echo "body<<EOF"
+              echo "curl exit code $rc — endpoint unreachable"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          body=$(printf '%s' "$response" | sed '$d')
+          code=$(printf '%s' "$response" | tail -n 1)
+          echo "HTTP $code"
+          echo "$body"
+
+          {
+            echo "code=$code"
+            echo "body<<EOF"
+            printf '%s\n' "$body"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$code" != "200" ]; then
+            exit 1
+          fi
+          ok=$(printf '%s' "$body" | jq -r '.ok // false')
+          if [ "$ok" != "true" ]; then
+            exit 1
+          fi
+
+      - name: Open or update watchdog issue
+        if: failure()
+        uses: actions/github-script@v7
+        env:
+          HTTP_CODE: ${{ steps.probe.outputs.code }}
+          BODY: ${{ steps.probe.outputs.body }}
+          HEALTH_URL: ${{ env.HEALTH_URL }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const label = 'watchdog';
+            const code = process.env.HTTP_CODE || 'no-response';
+            const url = process.env.HEALTH_URL;
+            const body = process.env.BODY || '';
+            const ts = new Date().toISOString();
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            const issueBody = [
+              `Watchdog detected a problem.`,
+              ``,
+              `- URL: ${url}`,
+              `- HTTP: ${code}`,
+              `- Time: ${ts}`,
+              `- Run: ${runUrl}`,
+              ``,
+              `Response body:`,
+              '```json',
+              body,
+              '```',
+            ].join('\n');
+
+            const open = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: label, per_page: 30,
+            });
+            const existing = open.data.find(i => i.title === '[watchdog] /api/health is degraded');
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: existing.number, body: issueBody,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner, repo,
+                title: '[watchdog] /api/health is degraded',
+                body: issueBody,
+                labels: [label, 'automation-failure'],
+              });
+            }

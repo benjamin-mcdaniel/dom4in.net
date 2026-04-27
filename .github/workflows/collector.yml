@@ -32,6 +32,7 @@ jobs:
     timeout-minutes: 8
     permissions:
       contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -47,3 +48,43 @@ jobs:
           COLLECTOR_SOURCE: github-actions
           COLLECTOR_MAX_BLOCKS: ${{ github.event.inputs.blocks || '10' }}
         run: python collector/collector.py --short --pause 0 --workers 4
+
+      # Open a deduped GitHub issue if any prior step failed.
+      # Same snippet is used in deploy-worker.yml — see that file for the
+      # cross-project pattern.
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v7
+        env:
+          WORKFLOW_NAME: ${{ github.workflow }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const wf = process.env.WORKFLOW_NAME || 'workflow';
+            const label = 'automation-failure';
+            const ts = new Date().toISOString();
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = [
+              `Workflow **${wf}** failed.`,
+              ``,
+              `- Time: ${ts}`,
+              `- Run: ${runUrl}`,
+              `- Trigger: ${context.eventName}`,
+            ].join('\n');
+
+            const open = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: label, per_page: 30,
+            });
+            const existing = open.data.find(i => i.title === `[${wf}] failing`);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: existing.number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner, repo,
+                title: `[${wf}] failing`,
+                body,
+                labels: [label],
+              });
+            }

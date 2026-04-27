@@ -37,7 +37,7 @@ export default {
     const path = url.pathname;
 
     if (path === "/api/health") {
-      return json({ status: "ok" });
+      return handleHealth(env);
     }
 
     if (path === "/api/stats/overview") {
@@ -75,6 +75,90 @@ export default {
 };
 
 // -------- handlers --------
+
+// Cross-project health contract.
+//   GET /api/health
+//     200 { ok: true,  status: "ok",       checks: [...] }   when all checks pass
+//     503 { ok: false, status: "degraded", checks: [...] }   when any check fails
+// Each check has { name, ok, message, age_hours? }. The watchdog workflow only
+// reads `ok` at the top level — checks[] is for humans diagnosing the issue.
+const STALE_THRESHOLD_HOURS = 30; // covers 8h cron cadence + one missed run + drift
+
+// SQLite datetime('now') returns 'YYYY-MM-DD HH:MM:SS' UTC with no zone marker.
+// JS Date() will guess local time without one, so normalize before parsing.
+function parseSqliteUtc(ts) {
+  if (!ts) return null;
+  const iso = String(ts).includes("T") ? ts : String(ts).replace(" ", "T");
+  const withZone = /[Zz]|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + "Z";
+  const d = new Date(withZone);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function ageHoursFrom(ts) {
+  const d = parseSqliteUtc(ts);
+  if (!d) return null;
+  return Math.round((Date.now() - d.getTime()) / 3600000);
+}
+
+async function handleHealth(env) {
+  const checks = [];
+
+  // Check 1: most recent run is fresh and not failed.
+  try {
+    const lastRun = await env.DB.prepare(
+      "SELECT run_id, started_at, finished_at, status FROM runs ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1"
+    ).first();
+    if (!lastRun) {
+      checks.push({ name: "last_run", ok: false, message: "no runs recorded yet" });
+    } else {
+      const ts = lastRun.finished_at || lastRun.started_at;
+      const age = ageHoursFrom(ts);
+      const stale = age === null || age > STALE_THRESHOLD_HOURS;
+      const failed = lastRun.status === "failed";
+      checks.push({
+        name: "last_run",
+        ok: !stale && !failed,
+        age_hours: age,
+        last_run_status: lastRun.status,
+        message:
+          (stale ? `stale: ${age}h since last run (threshold ${STALE_THRESHOLD_HOURS}h)` : null) ||
+          (failed ? `last run status=failed (run_id=${lastRun.run_id})` : `ok: ${age}h since last ${lastRun.status} run`),
+      });
+    }
+  } catch (err) {
+    checks.push({ name: "last_run", ok: false, message: `db error: ${String(err)}` });
+  }
+
+  // Check 2: aggregate data has been updated recently.
+  try {
+    const latest = await env.DB.prepare(
+      "SELECT MAX(updated_at) AS updated_at FROM global_stats"
+    ).first();
+    const ts = latest && latest.updated_at;
+    if (!ts) {
+      checks.push({ name: "data_freshness", ok: false, message: "no aggregate data" });
+    } else {
+      const age = ageHoursFrom(ts);
+      const stale = age === null || age > STALE_THRESHOLD_HOURS;
+      checks.push({
+        name: "data_freshness",
+        ok: !stale,
+        age_hours: age,
+        message: stale
+          ? `stale: ${age}h since last upload (threshold ${STALE_THRESHOLD_HOURS}h)`
+          : `ok: ${age}h since last upload`,
+      });
+    }
+  } catch (err) {
+    checks.push({ name: "data_freshness", ok: false, message: `db error: ${String(err)}` });
+  }
+
+  const allOk = checks.every((c) => c.ok);
+  return json(
+    { ok: allOk, status: allOk ? "ok" : "degraded", checks },
+    allOk ? 200 : 503
+  );
+}
 
 async function handleOverview(env) {
   try {
