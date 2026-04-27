@@ -9,40 +9,91 @@
   <style>
     :root {
       --bg: #050816;
-      --panel: #020617;
-      --border: #111827;
+      --panel: #0a0f24;
+      --panel-2: #0f1530;
+      --border: #1a2240;
+      --border-soft: #131a36;
       --text: #f9fafb;
+      --text-strong: #ffffff;
       --muted: #9ca3af;
       --muted-2: #6b7280;
       --accent-unreg: #6b7280;
       --accent-unused: #eab308;
       --accent-active: #22c55e;
+      --brand: #818cf8;
+      --brand-2: #38bdf8;
+      --brand-soft: rgba(129, 140, 248, 0.14);
+      --brand-ring: rgba(129, 140, 248, 0.28);
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+    /* Ambient gradient — a hint of color so the dark theme doesn't read flat. */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: -1; pointer-events: none;
+      background:
+        radial-gradient(900px 480px at 88% -8%, rgba(56, 189, 248, 0.10), transparent 60%),
+        radial-gradient(700px 360px at -10% 4%, rgba(129, 140, 248, 0.08), transparent 60%);
+    }
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      padding: 1.75rem clamp(1rem, 4vw, 2.5rem);
+      padding: 1.5rem clamp(1rem, 4vw, 2.5rem) 2rem;
       max-width: 1100px;
       margin: 0 auto;
-      line-height: 1.45;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
     }
     h1 { font-size: 1.9rem; margin: 0; letter-spacing: -0.01em; }
-    h2 { margin: 2.25rem 0 0.5rem; font-size: 1.1rem; letter-spacing: 0.01em; }
-    p { color: #d1d5db; }
-    .subtitle { color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
-    header { margin-bottom: 1.25rem; }
-    .header-row {
-      display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
-      gap: 0.75rem; row-gap: 0.25rem;
+    h2 {
+      margin: 2.5rem 0 0.6rem; font-size: 1.05rem; letter-spacing: -0.005em;
+      color: var(--text-strong); font-weight: 600;
+      display: flex; align-items: center; gap: 0.6rem;
     }
+    h2::before {
+      content: ''; width: 3px; height: 0.95em; border-radius: 2px;
+      background: linear-gradient(180deg, var(--brand), var(--brand-2));
+      flex: 0 0 auto;
+    }
+    p { color: #d1d5db; }
+    .subtitle { color: var(--muted); font-size: 0.88rem; margin-top: 0.15rem; }
+    /* Header --------------------------------------------------------------- */
+    .site-header {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 1rem; row-gap: 0.6rem;
+      padding: 0.25rem 0 1.4rem; margin-bottom: 1.4rem;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .brand {
+      display: flex; align-items: center; gap: 0.85rem;
+      text-decoration: none; color: inherit;
+    }
+    .brand-mark {
+      display: inline-flex; flex: 0 0 auto;
+      filter: drop-shadow(0 6px 18px rgba(129, 140, 248, 0.25));
+    }
+    .brand-mark svg { display: block; border-radius: 9px; }
+    .brand-text { display: flex; flex-direction: column; min-width: 0; }
+    .brand-name {
+      font-size: 1.65rem; margin: 0; font-weight: 700; letter-spacing: -0.022em;
+      color: var(--text-strong); line-height: 1.1;
+    }
+    .brand-accent {
+      background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%);
+      -webkit-background-clip: text; background-clip: text;
+      color: transparent;
+    }
+    .brand-tld { color: var(--muted); font-weight: 500; }
     /* Freshness indicator — the soft ticker */
     .freshness {
-      display: inline-flex; align-items: center; gap: 0.5rem;
+      display: inline-flex; align-items: center; gap: 0.55rem;
       font-size: 0.82rem; color: var(--muted);
-      background: var(--panel); border: 1px solid var(--border);
-      border-radius: 999px; padding: 0.35rem 0.75rem;
+      background: rgba(10, 15, 36, 0.65);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      border: 1px solid var(--border);
+      border-radius: 999px; padding: 0.4rem 0.85rem;
       white-space: nowrap;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset;
     }
     .freshness-dot {
       width: 0.55rem; height: 0.55rem; border-radius: 999px;
@@ -58,18 +109,39 @@
       100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
     }
     .kpi-grid {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 1rem; margin: 1rem 0 0;
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem; margin: 0.5rem 0 0;
     }
     .card {
-      background: var(--panel); border-radius: 0.75rem;
-      padding: 1rem 1.25rem; border: 1px solid var(--border);
+      position: relative;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.025) 0%, rgba(255,255,255,0) 60%),
+        var(--panel);
+      border-radius: 0.85rem;
+      padding: 1.05rem 1.25rem 1.1rem;
+      border: 1px solid var(--border);
+      transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+      overflow: hidden;
+    }
+    /* Hairline accent at top of card — purely visual rhythm. */
+    .card::before {
+      content: '';
+      position: absolute; top: 0; left: 12%; right: 12%; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--brand-ring), transparent);
+      opacity: 0.7;
+    }
+    .card:hover {
+      border-color: rgba(129, 140, 248, 0.32);
+      box-shadow: 0 0 0 1px var(--brand-soft), 0 8px 28px -16px rgba(56, 189, 248, 0.25);
     }
     .card-label {
-      font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em;
-      color: var(--muted); margin-bottom: 0.2rem;
+      font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--muted); margin-bottom: 0.35rem;
     }
-    .card-value { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .card-value {
+      font-size: 1.55rem; font-weight: 650; font-variant-numeric: tabular-nums;
+      letter-spacing: -0.012em; color: var(--text-strong);
+    }
     .vis-row {
       margin-top: 0.75rem; display: grid; gap: 1.25rem;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -100,9 +172,11 @@
     .tld-mini-card {
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 0.5rem;
+      border-radius: 0.6rem;
       padding: 0.65rem 0.75rem;
+      transition: border-color 160ms ease, transform 160ms ease;
     }
+    .tld-mini-card:hover { border-color: rgba(129, 140, 248, 0.28); transform: translateY(-1px); }
     .tld-mini-head {
       display: flex; justify-content: space-between; align-items: baseline;
       font-size: 0.8rem; margin-bottom: 0.4rem;
@@ -125,14 +199,23 @@
     .tld-mini-svg .axis-label { fill: #6b7280; font-size: 7.5px; font-family: system-ui, sans-serif; }
     .legend-item { display: inline-flex; align-items: center; gap: 0.25rem; }
     .legend-swatch { width: 0.7rem; height: 0.7rem; border-radius: 999px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.88rem; }
+    table {
+      width: 100%; border-collapse: collapse; margin-top: 0.85rem; font-size: 0.88rem;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 0.7rem; overflow: hidden;
+    }
     th, td {
-      padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border);
+      padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--border-soft);
       text-align: right; font-variant-numeric: tabular-nums;
     }
+    tbody tr:last-child td { border-bottom: none; }
     th:first-child, td:first-child { text-align: left; }
-    th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
-    tbody tr:hover { background: var(--panel); }
+    th {
+      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted);
+      background: rgba(255,255,255,0.015);
+    }
+    tbody tr { transition: background 120ms ease; }
+    tbody tr:hover { background: rgba(129, 140, 248, 0.05); }
     .word-chart-grid { margin-top: 0.5rem; display: grid; gap: 0.5rem; }
     .word-chart-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.82rem; color: #d1d5db; }
     .word-chart-label { width: 5.5rem; text-transform: uppercase; font-size: 0.72rem; white-space: nowrap; color: var(--muted); }
@@ -144,27 +227,47 @@
     #status, #word-status { font-size: 0.82rem; color: var(--muted); margin-top: 0.75rem; }
     pre {
       background: var(--panel); border: 1px solid var(--border);
-      border-radius: 0.5rem; padding: 0.55rem 0.75rem;
-      font-size: 0.72rem; overflow: auto; margin: 0;
+      border-radius: 0.6rem; padding: 0.7rem 0.9rem;
+      font-size: 0.78rem; overflow: auto; margin: 0;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.02) inset;
     }
-    code { color: #e5e7eb; }
+    code { color: #e5e7eb; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     footer {
-      margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border);
+      margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border-soft);
       font-size: 0.72rem; color: var(--muted-2);
+    }
+    /* Reduce motion for users who prefer it */
+    @media (prefers-reduced-motion: reduce) {
+      .freshness-dot { animation: none !important; }
+      .card, .tld-mini-card, tbody tr { transition: none !important; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <div class="header-row">
-      <div>
-        <h1>dom4in.net</h1>
-        <div class="subtitle">Aggregate availability stats for short and word-based domains.</div>
-      </div>
-      <div class="freshness" id="freshness" data-state="unknown" aria-live="polite" title="Time since last collector run">
-        <span class="freshness-dot" aria-hidden="true"></span>
-        <span id="freshness-text">Checking…</span>
-      </div>
+  <header class="site-header">
+    <a class="brand" href="/">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 36 36" width="34" height="34" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#818cf8"/>
+              <stop offset="100%" stop-color="#38bdf8"/>
+            </linearGradient>
+          </defs>
+          <rect width="36" height="36" rx="9" fill="url(#brandGrad)"/>
+          <text x="18" y="25" text-anchor="middle"
+                font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+                font-size="20" font-weight="700" fill="#050816">D</text>
+        </svg>
+      </span>
+      <span class="brand-text">
+        <h1 class="brand-name">dom<span class="brand-accent">4</span>in<span class="brand-tld">.net</span></h1>
+        <span class="subtitle">Aggregate availability stats for short and word-based domains.</span>
+      </span>
+    </a>
+    <div class="freshness" id="freshness" data-state="unknown" aria-live="polite" title="Time since last collector run">
+      <span class="freshness-dot" aria-hidden="true"></span>
+      <span id="freshness-text">Checking…</span>
     </div>
   </header>
 
