@@ -7,8 +7,42 @@
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+// Cache directives for public read endpoints. The data updates a few times a
+// day (collector cadence), so 5 minutes at the edge is conservative; SWR keeps
+// users hot during the brief revalidation window.
+const PUBLIC_CACHE_HEADERS = {
+  "Cache-Control": "public, max-age=60, s-maxage=300, stale-while-revalidate=600",
+};
+const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
+
+function json(body, status = 200, extraHeaders = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...JSON_HEADERS, ...extraHeaders },
+  });
+}
+
+// Worker-bound rate limiter. Falls open if the binding is missing (local dev,
+// preview deploys without the binding configured). Keyed on the client IP so
+// one rogue scraper can't starve everyone else.
+async function rateLimitOk(request, env) {
+  if (!env.RATE_LIMITER) return true;
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  try {
+    const result = await env.RATE_LIMITER.limit({ key: ip });
+    return Boolean(result && result.success);
+  } catch (_) {
+    // Don't take the API down because rate-limit infra hiccupped.
+    return true;
+  }
+}
+
+function rateLimitedResponse() {
+  return json(
+    { error: "rate_limited", message: "Too many requests; try again in a minute." },
+    429,
+    { "Retry-After": "60", "Cache-Control": "no-store" }
+  );
 }
 
 function unauthorized() {
@@ -36,15 +70,21 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // /api/health is intentionally not rate-limited and not cached: the
+    // watchdog and any external uptime monitor must always get fresh state.
     if (path === "/api/health") {
       return handleHealth(env);
     }
 
+    // Public stats endpoints — rate-limited per IP; success responses get
+    // edge cache headers so most repeat traffic never hits the Worker again.
     if (path === "/api/stats/overview") {
+      if (!(await rateLimitOk(request, env))) return rateLimitedResponse();
       return handleOverview(env);
     }
 
     if (path === "/api/stats/words") {
+      if (!(await rateLimitOk(request, env))) return rateLimitedResponse();
       return handleWordsOnly(env);
     }
 
@@ -156,7 +196,8 @@ async function handleHealth(env) {
   const allOk = checks.every((c) => c.ok);
   return json(
     { ok: allOk, status: allOk ? "ok" : "degraded", checks },
-    allOk ? 200 : 503
+    allOk ? 200 : 503,
+    NO_STORE_HEADERS
   );
 }
 
@@ -195,7 +236,7 @@ async function handleOverview(env) {
         basePayload.last_run_at = lastRun.finished_at || lastRun.started_at;
         basePayload.last_run_status = lastRun.status;
       }
-      return json(basePayload);
+      return json(basePayload, 200, PUBLIC_CACHE_HEADERS);
     }
 
     const { date, domains_tracked_24h, updated_at } = latestGlobal;
@@ -255,9 +296,9 @@ async function handleOverview(env) {
       word_pos_stats,
     };
 
-    return json(payload);
+    return json(payload, 200, PUBLIC_CACHE_HEADERS);
   } catch (err) {
-    return json({ error: "failed_to_load_overview", message: String(err) }, 500);
+    return json({ error: "failed_to_load_overview", message: String(err) }, 500, NO_STORE_HEADERS);
   }
 }
 
@@ -277,9 +318,9 @@ async function handleWordsOnly(env) {
       unused_found: row.unused_found,
     }));
 
-    return json({ word_pos_stats });
+    return json({ word_pos_stats }, 200, PUBLIC_CACHE_HEADERS);
   } catch (err) {
-    return json({ error: "failed_to_load_word_stats", message: String(err) }, 500);
+    return json({ error: "failed_to_load_word_stats", message: String(err) }, 500, NO_STORE_HEADERS);
   }
 }
 

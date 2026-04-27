@@ -7,5 +7,15 @@ binding = "DB"
 database_name = "DOM4IN_DB"
 database_id = "3954177a-2641-403a-a936-346443d59eac"
 
+# Rate limiting on public read endpoints. Consumed in src/index.js via
+# env.RATE_LIMITER.limit({ key: clientIp }). Cap is per-IP. Period must be
+# 10 or 60 (Cloudflare restriction). namespace_id is local to this Worker;
+# bump it if you ever want to reset state.
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
+
 [observability]
 enabled = true

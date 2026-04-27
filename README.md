@@ -160,13 +160,22 @@ Required secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `ADMIN_API_KE
 
 | Endpoint | Auth | Description |
 |---|---|---|
-| `GET /api/health` | — | Status check |
-| `GET /api/stats/overview` | — | Aggregated stats + run freshness |
-| `GET /api/stats/words` | — | Word/POS breakdown |
+| `GET /api/health` | — | DB-backed health check (returns 200 healthy / 503 degraded). Not cached, not rate-limited. |
+| `GET /api/stats/overview` | — | Aggregated stats + run freshness. Edge-cached 5 min, per-IP rate-limited. |
+| `GET /api/stats/words` | — | Word/POS breakdown. Edge-cached 5 min, per-IP rate-limited. |
 | `POST /api/admin/upload-aggregate` | Admin key | Collector pushes a block |
 | `POST /api/admin/reset-stats` | Admin key | Wipe all aggregates |
 | `GET/PUT /api/admin/state` | Admin key | Cloud pointer storage |
 | `POST /api/admin/runs` | Admin key | Run lifecycle events |
+
+### Abuse protection
+
+Public read endpoints are protected by two layers configured in `backend/wrangler.toml` and `backend/src/index.js`:
+
+- **Edge caching:** `Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600`. Cloudflare's edge serves the same JSON to repeat callers for ~5 minutes without invoking the Worker or D1, so a scraper hammering the URL gets static JSON for free.
+- **Per-IP rate limit:** 60 requests/min/IP via the `RATE_LIMITER` Worker binding. Excess returns `429` with `Retry-After: 60`. The watchdog hits `/api/health` (which is never rate-limited) so monitoring is never throttled.
+
+Error responses (`5xx`, `429`) carry `Cache-Control: no-store` so transient failures aren't cached at the edge.
 
 ---
 
