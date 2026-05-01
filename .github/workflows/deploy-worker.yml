@@ -37,7 +37,7 @@ jobs:
       # workflow you add.
       - name: Notify on failure
         if: failure()
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           WORKFLOW_NAME: ${{ github.workflow }}
         with:
