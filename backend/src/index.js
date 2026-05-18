@@ -110,6 +110,54 @@ export default {
       return handleRunsEvent(request, env);
     }
 
+    // v2 admin endpoints (ground-truth observatory). All admin-only — no
+    // public exposure of per-domain or per-registrar detail. Public reads
+    // come later through aggregated /api/stats/* additions.
+    if (path === "/api/admin/tld-dim" && request.method === "POST") {
+      if (!requireAdmin(request, env)) return unauthorized();
+      return handleUpsertTldDim(request, env);
+    }
+
+    if (path === "/api/admin/registrar-dim" && request.method === "POST") {
+      if (!requireAdmin(request, env)) return unauthorized();
+      return handleUpsertRegistrarDim(request, env);
+    }
+
+    if (path === "/api/admin/registrar-monthly" && request.method === "POST") {
+      if (!requireAdmin(request, env)) return unauthorized();
+      return handleUpsertRegistrarMonthly(request, env);
+    }
+
+    if (path === "/api/admin/zone-diff" && request.method === "POST") {
+      if (!requireAdmin(request, env)) return unauthorized();
+      return handleUpsertZoneDiff(request, env);
+    }
+
+    if (path === "/api/admin/brand-match" && request.method === "POST") {
+      if (!requireAdmin(request, env)) return unauthorized();
+      return handleInsertBrandMatch(request, env);
+    }
+
+    if (path === "/api/admin/watchlist" && request.method === "POST") {
+      if (!requireAdmin(request, env)) return unauthorized();
+      return handleUpsertWatchlist(request, env);
+    }
+
+    if (path === "/api/admin/watchlist" && request.method === "GET") {
+      if (!requireAdmin(request, env)) return unauthorized();
+      return handleListWatchlist(env);
+    }
+
+    // Public aggregate: how many brand matches were detected in the last 30
+    // days. Returns counts only — never the matched domains themselves.
+    // Useful for marketing copy and for prospective Brand Sentinel buyers
+    // to see "there were N exact-match brand hits across new gTLDs this
+    // month, here's roughly what you'd get if you subscribed."
+    if (path === "/api/stats/brand-matches") {
+      if (!(await rateLimitOk(request, env))) return rateLimitedResponse();
+      return handleBrandMatchSummary(env);
+    }
+
     return new Response("Not found", { status: 404 });
   },
 };
@@ -541,5 +589,295 @@ async function handleRunsEvent(request, env) {
     return json({ ok: true });
   } catch (err) {
     return json({ error: "failed_to_record_run_event", message: String(err) }, 500);
+  }
+}
+
+// -------- v2 handlers: ground-truth observatory --------
+//
+// All five endpoints accept { rows: [...] } and upsert with ON CONFLICT
+// semantics. They are chunked at the caller (Python scripts cap at 200
+// rows per POST) to stay well under D1's batch limit; per-row prepare()
+// is used because D1 doesn't support multi-row VALUES upserts cleanly.
+
+async function handleUpsertTldDim(request, env) {
+  const parsed = await readJson(request);
+  if (!parsed.ok) return json({ error: "invalid_json" }, 400);
+  const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
+  if (!rows) return json({ error: "missing_rows" }, 400);
+
+  let upserted = 0;
+  try {
+    for (const r of rows) {
+      if (!r || typeof r.tld !== "string" || typeof r.type !== "string") continue;
+      await env.DB.prepare(
+        "INSERT INTO tld_dim (tld, type, registry, jurisdiction, in_czds, launched_at, ga_at, status, notes) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(tld) DO UPDATE SET " +
+          "type = excluded.type, " +
+          "registry = COALESCE(excluded.registry, tld_dim.registry), " +
+          "jurisdiction = COALESCE(excluded.jurisdiction, tld_dim.jurisdiction), " +
+          "in_czds = excluded.in_czds, " +
+          "launched_at = COALESCE(excluded.launched_at, tld_dim.launched_at), " +
+          "ga_at = COALESCE(excluded.ga_at, tld_dim.ga_at), " +
+          "status = COALESCE(excluded.status, tld_dim.status), " +
+          "notes = COALESCE(excluded.notes, tld_dim.notes), " +
+          "updated_at = datetime('now')"
+      )
+        .bind(
+          r.tld,
+          r.type,
+          r.registry ?? null,
+          r.jurisdiction ?? null,
+          r.in_czds ? 1 : 0,
+          r.launched_at ?? null,
+          r.ga_at ?? null,
+          r.status ?? "active",
+          r.notes ?? null
+        )
+        .run();
+      upserted += 1;
+    }
+    return json({ ok: true, upserted });
+  } catch (err) {
+    return json({ error: "failed_to_upsert_tld_dim", message: String(err) }, 500);
+  }
+}
+
+async function handleUpsertRegistrarDim(request, env) {
+  const parsed = await readJson(request);
+  if (!parsed.ok) return json({ error: "invalid_json" }, 400);
+  const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
+  if (!rows) return json({ error: "missing_rows" }, 400);
+
+  let upserted = 0;
+  try {
+    for (const r of rows) {
+      const ianaId = Number(r?.iana_id);
+      if (!Number.isFinite(ianaId) || typeof r.name !== "string") continue;
+      await env.DB.prepare(
+        "INSERT INTO registrar_dim (iana_id, name, display_name, jurisdiction, accredited_at, status, rdap_base_url, website, notes) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(iana_id) DO UPDATE SET " +
+          "name = excluded.name, " +
+          "display_name = COALESCE(excluded.display_name, registrar_dim.display_name), " +
+          "jurisdiction = COALESCE(excluded.jurisdiction, registrar_dim.jurisdiction), " +
+          "accredited_at = COALESCE(excluded.accredited_at, registrar_dim.accredited_at), " +
+          "status = COALESCE(excluded.status, registrar_dim.status), " +
+          "rdap_base_url = COALESCE(excluded.rdap_base_url, registrar_dim.rdap_base_url), " +
+          "website = COALESCE(excluded.website, registrar_dim.website), " +
+          "notes = COALESCE(excluded.notes, registrar_dim.notes), " +
+          "updated_at = datetime('now')"
+      )
+        .bind(
+          ianaId,
+          r.name,
+          r.display_name ?? null,
+          r.jurisdiction ?? null,
+          r.accredited_at ?? null,
+          r.status ?? "accredited",
+          r.rdap_base_url ?? null,
+          r.website ?? null,
+          r.notes ?? null
+        )
+        .run();
+      upserted += 1;
+    }
+    return json({ ok: true, upserted });
+  } catch (err) {
+    return json({ error: "failed_to_upsert_registrar_dim", message: String(err) }, 500);
+  }
+}
+
+async function handleUpsertRegistrarMonthly(request, env) {
+  const parsed = await readJson(request);
+  if (!parsed.ok) return json({ error: "invalid_json" }, 400);
+  const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
+  if (!rows) return json({ error: "missing_rows" }, 400);
+
+  let upserted = 0;
+  try {
+    for (const r of rows) {
+      const ianaId = Number(r?.iana_id);
+      if (!Number.isFinite(ianaId)) continue;
+      if (typeof r.report_month !== "string" || typeof r.tld !== "string") continue;
+      await env.DB.prepare(
+        "INSERT INTO registrar_monthly_stats (report_month, iana_id, tld, net_adds, renewals, transfers, deletes, domains_under_mgmt, source_url) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(report_month, iana_id, tld) DO UPDATE SET " +
+          "net_adds = excluded.net_adds, " +
+          "renewals = excluded.renewals, " +
+          "transfers = excluded.transfers, " +
+          "deletes = excluded.deletes, " +
+          "domains_under_mgmt = excluded.domains_under_mgmt, " +
+          "source_url = COALESCE(excluded.source_url, registrar_monthly_stats.source_url), " +
+          "updated_at = datetime('now')"
+      )
+        .bind(
+          r.report_month,
+          ianaId,
+          r.tld,
+          Number(r.net_adds) || 0,
+          Number(r.renewals) || 0,
+          Number(r.transfers) || 0,
+          Number(r.deletes) || 0,
+          Number(r.domains_under_mgmt) || 0,
+          r.source_url ?? null
+        )
+        .run();
+      upserted += 1;
+    }
+    return json({ ok: true, upserted });
+  } catch (err) {
+    return json({ error: "failed_to_upsert_registrar_monthly", message: String(err) }, 500);
+  }
+}
+
+async function handleUpsertZoneDiff(request, env) {
+  const parsed = await readJson(request);
+  if (!parsed.ok) return json({ error: "invalid_json" }, 400);
+  const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
+  if (!rows) return json({ error: "missing_rows" }, 400);
+
+  let upserted = 0;
+  try {
+    for (const r of rows) {
+      if (typeof r.snap_date !== "string" || typeof r.tld !== "string") continue;
+      await env.DB.prepare(
+        "INSERT INTO zone_diff_daily (snap_date, tld, registered_total, new_today, dropped_today, zone_size_bytes, source, notes) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(snap_date, tld) DO UPDATE SET " +
+          "registered_total = excluded.registered_total, " +
+          "new_today = excluded.new_today, " +
+          "dropped_today = excluded.dropped_today, " +
+          "zone_size_bytes = COALESCE(excluded.zone_size_bytes, zone_diff_daily.zone_size_bytes), " +
+          "source = excluded.source, " +
+          "notes = COALESCE(excluded.notes, zone_diff_daily.notes), " +
+          "updated_at = datetime('now')"
+      )
+        .bind(
+          r.snap_date,
+          r.tld,
+          Number(r.registered_total) || 0,
+          Number(r.new_today) || 0,
+          Number(r.dropped_today) || 0,
+          r.zone_size_bytes != null ? Number(r.zone_size_bytes) : null,
+          r.source ?? "czds",
+          r.notes ?? null
+        )
+        .run();
+      upserted += 1;
+    }
+    return json({ ok: true, upserted });
+  } catch (err) {
+    return json({ error: "failed_to_upsert_zone_diff", message: String(err) }, 500);
+  }
+}
+
+async function handleUpsertWatchlist(request, env) {
+  const parsed = await readJson(request);
+  if (!parsed.ok) return json({ error: "invalid_json" }, 400);
+  const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
+  if (!rows) return json({ error: "missing_rows" }, 400);
+
+  let upserted = 0;
+  try {
+    for (const r of rows) {
+      if (typeof r.pattern !== "string" || !r.pattern) continue;
+      const pattern = r.pattern.toLowerCase();
+      // tld_filter stored as CSV in the row; arrays accepted from the API.
+      let tldFilter = r.tld_filter ?? null;
+      if (Array.isArray(tldFilter)) tldFilter = tldFilter.join(",");
+      await env.DB.prepare(
+        "INSERT INTO brand_watchlist (owner_email, pattern, match_type, tld_filter, notify, notes, expires_at, active) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      )
+        .bind(
+          r.owner_email ?? null,
+          pattern,
+          r.match_type ?? "exact",
+          tldFilter,
+          r.notify ? 1 : 0,
+          r.notes ?? null,
+          r.expires_at ?? null,
+          r.active === false ? 0 : 1
+        )
+        .run();
+      upserted += 1;
+    }
+    return json({ ok: true, upserted });
+  } catch (err) {
+    return json({ error: "failed_to_upsert_watchlist", message: String(err) }, 500);
+  }
+}
+
+async function handleListWatchlist(env) {
+  try {
+    const res = await env.DB.prepare(
+      "SELECT id, owner_email, pattern, match_type, tld_filter, notify, active, created_at, expires_at " +
+        "FROM brand_watchlist WHERE active = 1 ORDER BY created_at DESC LIMIT 500"
+    ).all();
+    return json({ rows: res.results || [] });
+  } catch (err) {
+    return json({ error: "failed_to_list_watchlist", message: String(err) }, 500);
+  }
+}
+
+async function handleBrandMatchSummary(env) {
+  try {
+    // Counts only — no matched_domain or pattern values returned.
+    const last30 = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM brand_match_event WHERE detected_at >= datetime('now','-30 days')"
+    ).first();
+    const byTld = await env.DB.prepare(
+      "SELECT tld, COUNT(*) AS n FROM brand_match_event " +
+        "WHERE detected_at >= datetime('now','-30 days') " +
+        "GROUP BY tld ORDER BY n DESC LIMIT 20"
+    ).all();
+    return json(
+      {
+        last_30_days: Number(last30?.n) || 0,
+        top_tlds: (byTld.results || []).map((r) => ({ tld: r.tld, count: Number(r.n) || 0 })),
+      },
+      200,
+      PUBLIC_CACHE_HEADERS,
+    );
+  } catch (err) {
+    return json({ error: "failed_to_summarize_brand_matches", message: String(err) }, 500, NO_STORE_HEADERS);
+  }
+}
+
+async function handleInsertBrandMatch(request, env) {
+  const parsed = await readJson(request);
+  if (!parsed.ok) return json({ error: "invalid_json" }, 400);
+  const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
+  if (!rows) return json({ error: "missing_rows" }, 400);
+
+  let inserted = 0;
+  try {
+    for (const r of rows) {
+      if (typeof r.pattern !== "string" || typeof r.matched_domain !== "string") continue;
+      if (typeof r.tld !== "string" || typeof r.source !== "string") continue;
+      // Dedupe handled by the unique index (watchlist_id, matched_domain, source).
+      // INSERT OR IGNORE keeps the pipeline idempotent.
+      const res = await env.DB.prepare(
+        "INSERT OR IGNORE INTO brand_match_event (watchlist_id, pattern, matched_domain, tld, registrar_iana_id, registered_at, source) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?)"
+      )
+        .bind(
+          r.watchlist_id ?? null,
+          r.pattern,
+          r.matched_domain,
+          r.tld,
+          r.registrar_iana_id != null ? Number(r.registrar_iana_id) : null,
+          r.registered_at ?? null,
+          r.source
+        )
+        .run();
+      // D1 reports meta.changes for executed mutations
+      if (res?.meta?.changes) inserted += res.meta.changes;
+    }
+    return json({ ok: true, inserted });
+  } catch (err) {
+    return json({ error: "failed_to_insert_brand_match", message: String(err) }, 500);
   }
 }

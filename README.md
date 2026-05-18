@@ -181,10 +181,154 @@ Error responses (`5xx`, `429`) carry `Cache-Control: no-store` so transient fail
 
 ## Design principles
 
-- **Aggregates only** — raw domain names are never stored remotely.
+- **Aggregates only on public endpoints** — every `/api/stats/*` response returns counts and rates, never per-domain lists. Per-domain detail exists for paid products but only ever leaves the system via signed export URLs.
 - **Walk-away safe** — no servers to maintain; everything runs on Cloudflare's free/low-cost tier and GitHub Actions.
-- **Restart-safe collector** — pointer files (local) or D1 state (cloud) mean a crashed run picks up where it left off.
+- **Restart-safe collectors** — pointer files (local) or D1 state (cloud); CZDS ingest is idempotent on `(snap_date, tld)`; ICANN report ingest is idempotent on `(report_month, iana_id, tld)`.
 - **Idempotent uploads** — `(run_id, batch_id)` dedup prevents double-counting if GHA retries a step.
+
+---
+
+## v2 — Ground-truth observatory (in progress)
+
+The site is expanding from "probe-sampled aggregates" to a full ground-truth observatory of the global domain market, built on three free authoritative sources:
+
+| Source | What it gives us | Cadence |
+|---|---|---|
+| **ICANN CZDS** zone files | Every registered second-level label across ~1,200 gTLDs | Daily |
+| **ICANN monthly registrar reports** | Per-registrar transaction counts and domains-under-management per TLD | Monthly |
+| **RDAP** (IANA bootstrap) | Sponsoring registrar attribution per domain | Sampled, on-demand |
+
+This unlocks four product directions (all under one brand, shared infra):
+
+1. **Domain Atlas** — free public dashboard of registration/drop trends, registrar share, new-gTLD adoption curves, pronounceable-availability index. Pure SEO/credibility play.
+2. **TLD Launch Reports** — free PDF on each new gTLD General Availability event (top-line stats + brand registrations). Linkbait that earns SEO.
+3. **Registrar Intelligence** — quarterly free Trust Index ranking + paid detailed PDF + CSV exports for procurement/competitive intel buyers.
+4. **Brand Sentinel** — paid one-time purchase. Customer's trademark list is watched across all CZDS zones; new-registration matches are emailed. Sellable variant: anyone can buy past brand-watch reports for marquee brands.
+
+### v2 data model (additions to `backend/db/schema.sql`)
+
+- `tld_dim` — every TLD with type/registry/jurisdiction/CZDS-coverage flag
+- `registrar_dim` — ICANN-accredited registrars (one row per IANA ID)
+- `registrar_monthly_stats` — ICANN-published per-(registrar, TLD, month) counts
+- `zone_diff_daily` — aggregate-only daily new/dropped counts per TLD from CZDS
+- `registrar_tld_coverage` — registrar × TLD pricing matrix (populated by future scrape)
+- `brand_watchlist` + `brand_match_event` — Sentinel patterns and hits
+
+Per-domain CZDS snapshots live in **R2** (private bucket, never public).
+
+### v2 workflows
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `collector.yml` | Cron 06/14/22 UTC + manual | Existing probe-based aggregate collector |
+| `czds.yml` | Cron 05:17 UTC daily | Pulls CZDS zone files, diffs vs yesterday, posts aggregates + brand matches |
+| `icann-reports.yml` | Cron 11:23 UTC on the 5th | Pulls ICANN's monthly registrar reports (2-month lag) |
+| `deploy-worker.yml` | Push to `main` | Deploys Worker via Wrangler |
+| `watchdog.yml` | Scheduled | Health checks against `/api/health` |
+
+### v2 admin endpoints
+
+Each accepts `{rows: [...]}` and is idempotent (ON CONFLICT DO UPDATE).
+
+- `POST /api/admin/tld-dim` — upsert TLD dimension entries (used by `collector/seed/tld_seed.py`)
+- `POST /api/admin/registrar-dim` — upsert registrar entries
+- `POST /api/admin/registrar-monthly` — upsert ICANN monthly reports
+- `POST /api/admin/zone-diff` — upsert daily CZDS aggregates
+- `POST /api/admin/brand-match` — insert brand-pattern hits (dedupe via unique index)
+- `POST /api/admin/watchlist` — add watchlist patterns
+- `GET  /api/admin/watchlist` — list active patterns
+
+Public additions:
+- `GET /api/stats/brand-matches` — 30-day count + top TLDs by match volume. **Counts only**; matched domains are never returned.
+
+---
+
+## Manual setup checklist (you do these; everything else is automated)
+
+These are the steps that require either signing into a third party, completing legal/business paperwork, or pasting a secret. Do them in this order; nothing later breaks if earlier steps are deferred — the workflows guard for missing credentials.
+
+### 1. Apply for ICANN CZDS access (~2 week wait)
+
+This unlocks daily zone-file diffs for all gTLDs, which is the foundation for v2. The application is free but you sign per-TLD agreements.
+
+1. Create an account at **https://czds.icann.org/** (use a business-sounding email — registries scrutinize signups).
+2. Add your contact details. Use phrasing like: *"Aggregate research on domain registration trends; outputs are statistical aggregates and brand-protection alerts. Per-domain detail is retained privately, never republished."*
+3. Submit a bulk-approval request: in the dashboard, **Add Multiple Zones**, paste a TLD list (start with the top ~50: `com net org io co info biz online store app dev ai xyz me uk us tv cc ...`). Most registries auto-approve; a few require a click.
+4. Once approved, generate API credentials in the portal and save them as repo secrets:
+   - `CZDS_USERNAME` — your CZDS portal email
+   - `CZDS_PASSWORD` — your CZDS portal password
+
+The `czds.yml` workflow exits cleanly until both are present, so adding them later is the only thing needed to turn ingestion on.
+
+### 2. Create a Cloudflare R2 bucket for zone snapshots
+
+CZDS snapshots are too large to fit in D1 and contain per-domain data we don't want anywhere public.
+
+1. In the Cloudflare dashboard → **R2 → Create bucket**. Name it `dom4in-zones` (or anything; you'll wire the name in step 3).
+2. **Enable Object Versioning** on the bucket (Bucket → Settings) so historical snapshots are retained for backfill/audit.
+3. **R2 → Manage R2 API Tokens → Create API Token** with read/write to that single bucket. Save:
+   - `R2_ACCOUNT_ID` (your CF account ID, also visible in the URL)
+   - `R2_ACCESS_KEY_ID`
+   - `R2_SECRET_ACCESS_KEY`
+   - `R2_BUCKET` (the bucket name)
+
+Without these the CZDS pipeline still runs but uses `/tmp` for yesterday's snapshot, meaning every domain looks "new" each run. Configure R2 before relying on diffs.
+
+### 3. Add the new repo secrets
+
+In **GitHub → Settings → Secrets and variables → Actions**, add (alongside the existing `ADMIN_API_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`):
+
+- `CZDS_USERNAME`
+- `CZDS_PASSWORD`
+- `R2_ACCOUNT_ID`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `R2_BUCKET`
+
+### 4. Apply the v2 schema migration
+
+```bash
+cd backend
+wrangler d1 execute DOM4IN_DB --remote --file=./db/schema.sql
+```
+
+The schema file uses `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` throughout, so re-applying it is safe.
+
+### 5. Deploy the updated Worker
+
+```bash
+cd backend && wrangler deploy
+```
+
+This activates the new admin endpoints. Existing public endpoints are unchanged.
+
+### 6. Seed the TLD dimension table
+
+After the Worker is deployed:
+
+```bash
+python collector/seed/tld_seed.py
+```
+
+This pulls IANA's authoritative TLD list + CZDS's coverage list and populates `tld_dim`. Re-run any time to refresh.
+
+### 7. Manually trigger the first ingest runs (smoke test)
+
+In GitHub Actions:
+
+- Run **ICANN Registrar Reports** workflow manually first (no credentials needed beyond `ADMIN_API_KEY`) — this validates the schema and Worker without depending on CZDS.
+- Once CZDS credentials are saved, run **CZDS Ingest** manually. The first run is the slowest; subsequent diffs are quick.
+
+### 8. (Later, when ready to monetize) Stripe + delivery wiring
+
+Not in this batch — added in a follow-up. The hooks needed are:
+
+- Stripe Payment Link per product (PDF report, Brand Sentinel watchlist seat, CSV export).
+- One Worker route `POST /api/stripe/webhook` that verifies signatures and writes purchase records to a new `purchases` table.
+- For Brand Sentinel: on purchase, create one `brand_watchlist` row per pattern with `owner_email = customer.email` and `expires_at = +24 months`.
+- For one-shot exports: generate a signed R2 URL valid for 7 days and email it via Resend/MailChannels.
+
+No login portal is needed for the download products. A login is only needed for Brand Sentinel customers to manage their watchlist — recommend the tiny OIDC-Worker pattern on `id.dom4in.net` when that day comes.
 
 ---
 
