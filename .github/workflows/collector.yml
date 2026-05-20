@@ -1,4 +1,4 @@
-name: Collector
+name: '[auto] Collector'
 
 # Scheduled short-mode collector runs.
 # Cadence: 3x/day at 06/14/22 UTC. Also exposed as workflow_dispatch.

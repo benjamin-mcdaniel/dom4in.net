@@ -1,4 +1,4 @@
-name: Corpus Seed
+name: '[auto] Corpus Seed'
 
 # Refreshes the `companies` and `tranco_ranks` tables from public sources:
 #   - SEC EDGAR (US public companies)

@@ -1,40 +1,61 @@
-name: '[auto] Deploy Worker'
+name: '[setup] DB Migration'
+
+# Apply backend/db/schema.sql against the remote D1 database. Optionally
+# run an additional migration file (any .sql under backend/db/migrations/).
+# Idempotent — schema uses IF NOT EXISTS everywhere.
+#
+# Trigger manually from the Actions tab whenever the schema changes.
+# Replaces the local `wrangler d1 execute` step.
 
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'backend/**'
+  workflow_dispatch:
+    inputs:
+      migration_file:
+        description: 'Additional migration file under backend/db/migrations/ (optional, e.g. 001_drop_brand_tables.sql)'
+        required: false
+        default: ''
+      apply_schema:
+        description: 'Apply backend/db/schema.sql (the main schema)'
+        required: false
+        default: 'true'
+
+concurrency:
+  group: setup-db
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  migrate:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-      - name: Install Node
-        uses: actions/setup-node@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: '20'
 
       - name: Install wrangler
         run: npm install -g wrangler@4
 
-      - name: Deploy
+      - name: Apply main schema
+        if: github.event.inputs.apply_schema != 'false'
         working-directory: backend
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: wrangler deploy
+        run: wrangler d1 execute DOM4IN_DB --remote --file=./db/schema.sql
 
-      # Cross-project pattern: every workflow ends with this same snippet so
-      # silent CI failures surface as a deduped GitHub issue (and an email).
-      # Copy this block (and the `permissions: issues: write`) into any new
-      # workflow you add.
+      - name: Apply additional migration file
+        if: github.event.inputs.migration_file != ''
+        working-directory: backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler d1 execute DOM4IN_DB --remote --file=./db/migrations/${{ github.event.inputs.migration_file }}
+
       - name: Notify on failure
         if: failure()
         uses: actions/github-script@v9
@@ -54,7 +75,6 @@ jobs:
               `- Run: ${runUrl}`,
               `- Trigger: ${context.eventName}`,
             ].join('\n');
-
             const open = await github.rest.issues.listForRepo({
               owner, repo, state: 'open', labels: label, per_page: 30,
             });

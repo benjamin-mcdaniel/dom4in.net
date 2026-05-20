@@ -1,4 +1,4 @@
-name: ICANN Registrar Reports
+name: '[auto] ICANN Reports'
 
 # Monthly pull of ICANN's per-registrar transaction reports. Public data,
 # no credentials required. Idempotent — re-runs of the same month upsert.

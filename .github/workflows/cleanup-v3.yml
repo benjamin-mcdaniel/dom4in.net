@@ -1,4 +1,4 @@
-name: Cleanup v3 (one-shot)
+name: '[oneshot] Cleanup v3'
 
 # One-time cleanup workflow. Trigger manually from the Actions tab.
 # - Drops deprecated brand_watchlist + brand_match_event tables in D1.

@@ -1,4 +1,4 @@
-name: Watchdog
+name: '[auto] Watchdog'
 
 # Daily health check against the public /api/health endpoint.
 # The Worker does the actual DB freshness logic (last run age, data freshness,

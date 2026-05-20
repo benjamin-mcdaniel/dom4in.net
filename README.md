@@ -278,27 +278,34 @@ Their admin endpoints (`/api/admin/tld-dim`, `/api/admin/registrar-dim`, `/api/a
 
 ## Manual setup checklist (v3)
 
-Schema migration and Worker deploy happen once locally. Everything else runs in GitHub Actions.
+Everything runs in GitHub Actions. No local wrangler needed.
 
-1. **Apply schema** (one-time, local):
-   ```
-   cd backend
-   wrangler d1 execute DOM4IN_DB --remote --file=.\db\schema.sql
-   wrangler deploy
-   ```
-2. **Trigger Corpus Seed workflow** in GitHub Actions → Corpus Seed → Run workflow. Uses the existing `ADMIN_API_KEY` repo secret. Re-runs monthly on its own cron.
+1. Actions → **`[setup] DB Migration`** → Run workflow (applies `schema.sql`)
+2. Push any `backend/**` change to `main` — **`[auto] Deploy Worker`** picks it up automatically
+3. Actions → **`[auto] Corpus Seed`** → Run workflow (seeds `companies` + `tranco_ranks`)
+4. Actions → **`[oneshot] Cleanup v3`** → Run workflow (drops deprecated tables, removes CZDS tombstones). After it goes green, `git rm .github/workflows/cleanup-v3.yml backend/db/migrations/001_drop_brand_tables.sql` and commit.
 
-The CZDS tombstones (`collector/czds_ingest.py`, `.github/workflows/czds.yml`) are harmless stubs; `git rm` them when convenient.
+### Workflow naming convention
+
+Every workflow's `name:` is prefixed with a tag so the Actions sidebar groups cleanly:
+
+- **`[setup]`** — sets up infrastructure (DB migrations, blob buckets, etc.). Manual-trigger.
+- **`[auto]`** — runs on a cron or push trigger continuously (collectors, deploys, watchdogs).
+- **`[oneshot]`** — single-use cleanup or migration. After a successful run the workflow file gets `git rm`'d in the next commit.
+
+When adding a new workflow, pick a tag and put it in single quotes in the YAML: `name: '[auto] My New Thing'`.
 
 ### v3 workflows
 
-| Workflow | Trigger | What it does |
-|---|---|---|
-| `collector.yml` | Cron 06/14/22 UTC + manual | Existing probe-based aggregate collector (TLD trends) |
-| `icann-reports.yml` | Cron 11:23 UTC on the 5th | Pulls ICANN monthly registrar reports |
-| `corpus-seed.yml` | Cron 06:00 UTC on the 2nd + manual | Refreshes companies + Tranco ranks |
-| `deploy-worker.yml` | Push to `main` (backend changes) | Deploys Worker via Wrangler |
-| `watchdog.yml` | Scheduled | Health checks against `/api/health` |
+| Workflow | Tag | Trigger | What it does |
+|---|---|---|---|
+| `collector.yml` | auto | Cron 06/14/22 UTC + manual | Probe-based aggregate collector (TLD trends) |
+| `icann-reports.yml` | auto | Cron 11:23 UTC on the 5th | Pulls ICANN monthly registrar reports |
+| `corpus-seed.yml` | auto | Cron 06:00 UTC on the 2nd + manual | Refreshes companies + Tranco ranks |
+| `deploy-worker.yml` | auto | Push to `main` (backend changes) | Deploys Worker via Wrangler |
+| `watchdog.yml` | auto | Scheduled | Health checks against `/api/health` |
+| `setup-db.yml` | setup | Manual | Applies `schema.sql` and optional migration files |
+| `cleanup-v3.yml` | oneshot | Manual | Drops deprecated brand tables, removes CZDS tombstones. Delete the file after a successful run. |
 
 Next session ships the monthly probe script + GHA workflow + the multi-page ECharts frontend.
 
