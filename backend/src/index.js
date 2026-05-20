@@ -782,18 +782,31 @@ async function handleUpsertZoneDiff(request, env) {
 
 // -------- v3 handlers: company tracker --------
 
+// Run a batch of prepared statements through D1's batch() API in chunks.
+// Sequential .run() per row crushes D1 / hits Worker CPU; batch() ships the
+// whole set in one round-trip and is dramatically faster + cheaper.
+async function runBatched(env, statements, chunkSize = 50) {
+  let executed = 0;
+  for (let i = 0; i < statements.length; i += chunkSize) {
+    const chunk = statements.slice(i, i + chunkSize);
+    await env.DB.batch(chunk);
+    executed += chunk.length;
+  }
+  return executed;
+}
+
 async function handleUpsertCompanies(request, env) {
   const parsed = await readJson(request);
   if (!parsed.ok) return json({ error: "invalid_json" }, 400);
   const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
   if (!rows) return json({ error: "missing_rows" }, 400);
 
-  let upserted = 0;
   try {
+    const stmts = [];
     for (const r of rows) {
       if (typeof r.name !== "string" || typeof r.canonical_domain !== "string") continue;
       const domain = r.canonical_domain.toLowerCase();
-      await env.DB.prepare(
+      stmts.push(env.DB.prepare(
         "INSERT INTO companies (name, canonical_domain, ticker, exchange, sec_cik, industry, " +
           "in_sp500, in_russell1000, in_russell3000, in_us_public, notes) " +
           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
@@ -809,23 +822,14 @@ async function handleUpsertCompanies(request, env) {
           "in_us_public = excluded.in_us_public, " +
           "notes = COALESCE(excluded.notes, companies.notes), " +
           "updated_at = datetime('now')"
-      )
-        .bind(
-          r.name,
-          domain,
-          r.ticker ?? null,
-          r.exchange ?? null,
-          r.sec_cik ?? null,
-          r.industry ?? null,
-          r.in_sp500 ? 1 : 0,
-          r.in_russell1000 ? 1 : 0,
-          r.in_russell3000 ? 1 : 0,
-          r.in_us_public ? 1 : 0,
-          r.notes ?? null
-        )
-        .run();
-      upserted += 1;
+      ).bind(
+        r.name, domain,
+        r.ticker ?? null, r.exchange ?? null, r.sec_cik ?? null, r.industry ?? null,
+        r.in_sp500 ? 1 : 0, r.in_russell1000 ? 1 : 0, r.in_russell3000 ? 1 : 0,
+        r.in_us_public ? 1 : 0, r.notes ?? null
+      ));
     }
+    const upserted = await runBatched(env, stmts);
     return json({ ok: true, upserted });
   } catch (err) {
     return json({ error: "failed_to_upsert_companies", message: String(err) }, 500);
@@ -838,20 +842,18 @@ async function handleUpsertTrancoRanks(request, env) {
   const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
   if (!rows) return json({ error: "missing_rows" }, 400);
 
-  let upserted = 0;
   try {
+    const stmts = [];
     for (const r of rows) {
       if (typeof r.domain !== "string" || typeof r.snap_month !== "string") continue;
       const rank = Number(r.rank);
       if (!Number.isFinite(rank)) continue;
-      await env.DB.prepare(
+      stmts.push(env.DB.prepare(
         "INSERT INTO tranco_ranks (domain, snap_month, rank) VALUES (?, ?, ?) " +
           "ON CONFLICT(domain, snap_month) DO UPDATE SET rank = excluded.rank"
-      )
-        .bind(r.domain.toLowerCase(), r.snap_month, rank)
-        .run();
-      upserted += 1;
+      ).bind(r.domain.toLowerCase(), r.snap_month, rank));
     }
+    const upserted = await runBatched(env, stmts);
     return json({ ok: true, upserted });
   } catch (err) {
     return json({ error: "failed_to_upsert_tranco_ranks", message: String(err) }, 500);
@@ -864,11 +866,11 @@ async function handleUpsertMonthlyProbe(request, env) {
   const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
   if (!rows) return json({ error: "missing_rows" }, 400);
 
-  let upserted = 0;
   try {
+    const stmts = [];
     for (const r of rows) {
       if (typeof r.snap_month !== "string" || typeof r.domain !== "string") continue;
-      await env.DB.prepare(
+      stmts.push(env.DB.prepare(
         "INSERT INTO monthly_probe (snap_month, domain, registrar_iana_id, ns_provider, ns_records_count, " +
           "ns_country, mx_provider, has_mx, hosting_provider, a_asn, has_aaaa, dnssec, caa_present, " +
           "cert_issuer, analytics_provider, tag_managers, marketing_stack, cdn_provider, http_server, " +
@@ -885,22 +887,20 @@ async function handleUpsertMonthlyProbe(request, env) {
           "cdn_provider = excluded.cdn_provider, http_server = excluded.http_server, " +
           "probe_status = excluded.probe_status, notes = excluded.notes, " +
           "probed_at = datetime('now')"
-      )
-        .bind(
-          r.snap_month, r.domain.toLowerCase(),
-          r.registrar_iana_id ?? null, r.ns_provider ?? null, r.ns_records_count ?? null,
-          r.ns_country ?? null, r.mx_provider ?? null, r.has_mx == null ? null : (r.has_mx ? 1 : 0),
-          r.hosting_provider ?? null, r.a_asn ?? null,
-          r.has_aaaa == null ? null : (r.has_aaaa ? 1 : 0),
-          r.dnssec == null ? null : (r.dnssec ? 1 : 0),
-          r.caa_present == null ? null : (r.caa_present ? 1 : 0),
-          r.cert_issuer ?? null, r.analytics_provider ?? null, r.tag_managers ?? null,
-          r.marketing_stack ?? null, r.cdn_provider ?? null, r.http_server ?? null,
-          r.probe_status ?? "ok", r.notes ?? null
-        )
-        .run();
-      upserted += 1;
+      ).bind(
+        r.snap_month, r.domain.toLowerCase(),
+        r.registrar_iana_id ?? null, r.ns_provider ?? null, r.ns_records_count ?? null,
+        r.ns_country ?? null, r.mx_provider ?? null, r.has_mx == null ? null : (r.has_mx ? 1 : 0),
+        r.hosting_provider ?? null, r.a_asn ?? null,
+        r.has_aaaa == null ? null : (r.has_aaaa ? 1 : 0),
+        r.dnssec == null ? null : (r.dnssec ? 1 : 0),
+        r.caa_present == null ? null : (r.caa_present ? 1 : 0),
+        r.cert_issuer ?? null, r.analytics_provider ?? null, r.tag_managers ?? null,
+        r.marketing_stack ?? null, r.cdn_provider ?? null, r.http_server ?? null,
+        r.probe_status ?? "ok", r.notes ?? null
+      ));
     }
+    const upserted = await runBatched(env, stmts);
     return json({ ok: true, upserted });
   } catch (err) {
     return json({ error: "failed_to_upsert_monthly_probe", message: String(err) }, 500);

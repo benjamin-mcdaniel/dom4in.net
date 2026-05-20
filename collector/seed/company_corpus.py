@@ -64,8 +64,10 @@ OVERRIDES_FILE = os.path.join(BASE_DIR, "manual_domain_overrides.json")
 
 EDGAR_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-RUSSELL1000_WIKI_URL = "https://en.wikipedia.org/wiki/Russell_1000_Index"
 TRANCO_LATEST_URL = "https://tranco-list.eu/top-1m.csv.zip"
+# Russell 1000 had no clean free public source — the Wikipedia page only
+# lists ~50 holdings, and iShares' CSV requires browser-emulating cookies.
+# Use S&P 500 (500) + EDGAR full (~6K, ≈ Russell 3000 proxy) + Tranco instead.
 
 DEFAULT_TRANCO_LIMIT = 10_000
 
@@ -100,22 +102,54 @@ def fetch(url: str, timeout: int = 60, extra_headers: Optional[Dict] = None) -> 
         return resp.read()
 
 
-def post_admin(cfg: Dict[str, str], path: str, rows: List[Dict]) -> None:
+def post_admin(cfg: Dict[str, str], path: str, rows: List[Dict],
+               max_retries: int = 5) -> None:
+    """POST with retry-with-backoff. D1 occasionally returns 503/429 under
+    load; backing off and retrying gets us through without ad-hoc resumes.
+    Backoff: 2, 4, 8, 16, 32 seconds (capped)."""
     if not rows:
         return
     url = f"{cfg['api_base']}{path}"
     body = json.dumps({"rows": rows}).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=body, method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "x-admin-api-key": cfg["api_key"],
-            "User-Agent": UA,
-        },
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        if resp.status >= 300:
-            raise RuntimeError(f"POST {path} [{resp.status}]: {resp.read()}")
+
+    attempt = 0
+    while True:
+        attempt += 1
+        req = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "x-admin-api-key": cfg["api_key"],
+                "User-Agent": UA,
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                if resp.status >= 300:
+                    raise RuntimeError(f"POST {path} [{resp.status}]: {resp.read()[:500]!r}")
+            return
+        except urllib.error.HTTPError as err:
+            body_txt = ""
+            try:
+                body_txt = err.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                pass
+            # Retry only on transient class. 4xx other than 429 are caller bugs.
+            transient = err.code in (408, 425, 429, 500, 502, 503, 504)
+            if not transient or attempt >= max_retries:
+                raise RuntimeError(
+                    f"POST {path} HTTP {err.code} after {attempt} attempts: {body_txt}"
+                ) from err
+            delay = min(2 ** attempt, 32)
+            print(f"  retry {attempt}/{max_retries} after HTTP {err.code} — sleeping {delay}s")
+            time.sleep(delay)
+        except urllib.error.URLError as err:
+            # Network blip — retry.
+            if attempt >= max_retries:
+                raise RuntimeError(f"POST {path} network error: {err}") from err
+            delay = min(2 ** attempt, 32)
+            print(f"  retry {attempt}/{max_retries} after URLError {err} — sleeping {delay}s")
+            time.sleep(delay)
 
 
 def chunked(rows: List[Dict], n: int = 200):
@@ -219,16 +253,15 @@ def extract_tickers_from_wiki(url: str) -> Set[str]:
     return tickers
 
 
-def apply_index_membership(edgar_rows: List[Dict], sp500: Set[str], r1000: Set[str]) -> None:
-    """Mutates rows in place to set in_sp500 / in_russell1000 flags."""
+def apply_index_membership(edgar_rows: List[Dict], sp500: Set[str]) -> None:
+    """Mutates rows in place to set in_sp500 (and in_russell3000 as a proxy
+    for "all US public" — the EDGAR set ≈ Russell 3000)."""
     for r in edgar_rows:
-        t = r["ticker"]
-        if t in sp500:
+        # Everyone in EDGAR is "US public"; we use that as a Russell 3000 proxy
+        # since there's no clean free public Russell 3000 constituent list.
+        r["in_russell3000"] = 1
+        if r["ticker"] in sp500:
             r["in_sp500"] = 1
-        if t in r1000:
-            r["in_russell1000"] = 1
-            # If in Russell 1000, also in Russell 3000 by definition.
-            r["in_russell3000"] = 1
 
 
 # ---------------------------------------------------------------------------
@@ -304,25 +337,30 @@ def main() -> int:
         edgar_rows = fetch_edgar(overrides)
         print(f"  parsed {len(edgar_rows)} public-company rows")
 
-    sp500_tickers: Set[str] = set()
-    r1000_tickers: Set[str] = set()
     if edgar_rows:
         print("Fetching S&P 500 constituents from Wikipedia ...")
         sp500_tickers = extract_tickers_from_wiki(SP500_WIKI_URL)
         print(f"  found {len(sp500_tickers)} candidate tickers (will intersect with EDGAR)")
-        print("Fetching Russell 1000 constituents from Wikipedia ...")
-        r1000_tickers = extract_tickers_from_wiki(RUSSELL1000_WIKI_URL)
-        print(f"  found {len(r1000_tickers)} candidate tickers")
-        apply_index_membership(edgar_rows, sp500_tickers, r1000_tickers)
+        apply_index_membership(edgar_rows, sp500_tickers)
         n_sp = sum(1 for r in edgar_rows if r["in_sp500"])
-        n_r1 = sum(1 for r in edgar_rows if r["in_russell1000"])
-        print(f"  intersected: {n_sp} S&P 500, {n_r1} Russell 1000")
+        n_r3 = sum(1 for r in edgar_rows if r["in_russell3000"])
+        print(f"  flagged: {n_sp} S&P 500, {n_r3} Russell 3000 (EDGAR proxy)")
+
+    # Smaller chunks here (100) — D1 batch() handles them efficiently and a
+    # smaller blast radius means a failed batch costs less on retry.
+    COMPANY_CHUNK = 100
+    TRANCO_CHUNK = 200
 
     # Upload EDGAR rows first so domain dedupe works against the DB-known set.
     if edgar_rows:
-        print(f"Uploading {len(edgar_rows)} EDGAR companies ...")
-        for batch in chunked(edgar_rows):
+        total = len(edgar_rows)
+        print(f"Uploading {total} EDGAR companies in chunks of {COMPANY_CHUNK} ...")
+        sent = 0
+        for batch in chunked(edgar_rows, COMPANY_CHUNK):
             post_admin(cfg, "/api/admin/companies", batch)
+            sent += len(batch)
+            if sent % (COMPANY_CHUNK * 10) == 0 or sent == total:
+                print(f"  uploaded {sent}/{total}")
 
     if os.environ.get("SKIP_TRANCO") == "1":
         print("Skipping Tranco per SKIP_TRANCO=1.")
@@ -339,16 +377,26 @@ def main() -> int:
             tranco_rows = []
 
         if tranco_rows:
-            print(f"  uploading {len(tranco_rows):,} rank rows ...")
-            for batch in chunked(tranco_rows, 500):
+            total = len(tranco_rows)
+            print(f"  uploading {total:,} rank rows in chunks of {TRANCO_CHUNK} ...")
+            sent = 0
+            for batch in chunked(tranco_rows, TRANCO_CHUNK):
                 post_admin(cfg, "/api/admin/tranco-ranks", batch)
+                sent += len(batch)
+                if sent % (TRANCO_CHUNK * 10) == 0 or sent == total:
+                    print(f"    uploaded {sent}/{total}")
 
             existing = {r["canonical_domain"] for r in edgar_rows}
             new_companies = tranco_to_companies(tranco_rows, existing)
             if new_companies:
-                print(f"  uploading {len(new_companies):,} non-public Tranco-only websites ...")
-                for batch in chunked(new_companies):
+                total_n = len(new_companies)
+                print(f"  uploading {total_n:,} non-public Tranco-only websites in chunks of {COMPANY_CHUNK} ...")
+                sent = 0
+                for batch in chunked(new_companies, COMPANY_CHUNK):
                     post_admin(cfg, "/api/admin/companies", batch)
+                    sent += len(batch)
+                    if sent % (COMPANY_CHUNK * 10) == 0 or sent == total_n:
+                        print(f"    uploaded {sent}/{total_n}")
 
     print("Corpus seed complete.")
     return 0

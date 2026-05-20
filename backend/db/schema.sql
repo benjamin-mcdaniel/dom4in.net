@@ -337,13 +337,3 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_share_unique
   ON provider_share_monthly (snap_month, tier, category, provider_key);
 CREATE INDEX IF NOT EXISTS idx_provider_share_browse
   ON provider_share_monthly (tier, category, snap_month);
-
--- ---------------------------------------------------------------------------
--- DEPRECATED in v3 — brand_watchlist / brand_match_event were for the
--- Brand Sentinel product line, which the project no longer pursues.
--- Drop with:
---   DROP TABLE IF EXISTS brand_match_event;
---   DROP TABLE IF EXISTS brand_watchlist;
--- Left here as a reminder; not declared because we don't want them
--- re-created on a fresh DB.
--- ---------------------------------------------------------------------------

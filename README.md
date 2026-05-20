@@ -261,66 +261,18 @@ All accept `{rows: [...]}`. Idempotent via `ON CONFLICT DO UPDATE`.
 - Multi-page frontend with menus + ECharts (Home / Public Companies / Top Websites / Domain Stats / Data / Newsletter / Methodology)
 - Newsletter (likely Buttondown or static markdown + RSS)
 
-### Removed in v3
+### Domain-stats sidebar (kept from earlier build)
 
-- CZDS ingestion pipeline (`collector/czds_ingest.py`, `.github/workflows/czds.yml`) — tombstoned in repo, please `git rm` them.
-- Brand Sentinel data model: `brand_watchlist` and `brand_match_event` tables are deprecated; admin/public brand endpoints removed from the Worker.
-- R2 bucket + SigV4 signing — not needed without CZDS.
+The TLD-level trend tables still ingest in parallel and feed the "Domain Stats" section of the site:
 
----
+- `tld_dim` — TLD metadata (IANA + classification)
+- `registrar_dim` — ICANN-accredited registrars
+- `registrar_monthly_stats` — ICANN monthly transaction reports (per registrar × TLD)
+- `zone_diff_daily` — daily aggregate counts from the probe collector
 
-## v2 — Ground-truth observatory (superseded by v3, kept for reference)
+Workflows that feed it: `collector.yml`, `icann-reports.yml`.
 
-The site is expanding from "probe-sampled aggregates" to a full ground-truth observatory of the global domain market, built on three free authoritative sources:
-
-| Source | What it gives us | Cadence |
-|---|---|---|
-| **ICANN CZDS** zone files | Every registered second-level label across ~1,200 gTLDs | Daily |
-| **ICANN monthly registrar reports** | Per-registrar transaction counts and domains-under-management per TLD | Monthly |
-| **RDAP** (IANA bootstrap) | Sponsoring registrar attribution per domain | Sampled, on-demand |
-
-This unlocks four product directions (all under one brand, shared infra):
-
-1. **Domain Atlas** — free public dashboard of registration/drop trends, registrar share, new-gTLD adoption curves, pronounceable-availability index. Pure SEO/credibility play.
-2. **TLD Launch Reports** — free PDF on each new gTLD General Availability event (top-line stats + brand registrations). Linkbait that earns SEO.
-3. **Registrar Intelligence** — quarterly free Trust Index ranking + paid detailed PDF + CSV exports for procurement/competitive intel buyers.
-4. **Brand Sentinel** — paid one-time purchase. Customer's trademark list is watched across all CZDS zones; new-registration matches are emailed. Sellable variant: anyone can buy past brand-watch reports for marquee brands.
-
-### v2 data model (additions to `backend/db/schema.sql`)
-
-- `tld_dim` — every TLD with type/registry/jurisdiction/CZDS-coverage flag
-- `registrar_dim` — ICANN-accredited registrars (one row per IANA ID)
-- `registrar_monthly_stats` — ICANN-published per-(registrar, TLD, month) counts
-- `zone_diff_daily` — aggregate-only daily new/dropped counts per TLD from CZDS
-- `registrar_tld_coverage` — registrar × TLD pricing matrix (populated by future scrape)
-- `brand_watchlist` + `brand_match_event` — Sentinel patterns and hits
-
-Per-domain CZDS snapshots live in **R2** (private bucket, never public).
-
-### v2 workflows
-
-| Workflow | Trigger | What it does |
-|---|---|---|
-| `collector.yml` | Cron 06/14/22 UTC + manual | Existing probe-based aggregate collector |
-| `czds.yml` | Cron 05:17 UTC daily | Pulls CZDS zone files, diffs vs yesterday, posts aggregates + brand matches |
-| `icann-reports.yml` | Cron 11:23 UTC on the 5th | Pulls ICANN's monthly registrar reports (2-month lag) |
-| `deploy-worker.yml` | Push to `main` | Deploys Worker via Wrangler |
-| `watchdog.yml` | Scheduled | Health checks against `/api/health` |
-
-### v2 admin endpoints
-
-Each accepts `{rows: [...]}` and is idempotent (ON CONFLICT DO UPDATE).
-
-- `POST /api/admin/tld-dim` — upsert TLD dimension entries (used by `collector/seed/tld_seed.py`)
-- `POST /api/admin/registrar-dim` — upsert registrar entries
-- `POST /api/admin/registrar-monthly` — upsert ICANN monthly reports
-- `POST /api/admin/zone-diff` — upsert daily CZDS aggregates
-- `POST /api/admin/brand-match` — insert brand-pattern hits (dedupe via unique index)
-- `POST /api/admin/watchlist` — add watchlist patterns
-- `GET  /api/admin/watchlist` — list active patterns
-
-Public additions:
-- `GET /api/stats/brand-matches` — 30-day count + top TLDs by match volume. **Counts only**; matched domains are never returned.
+Their admin endpoints (`/api/admin/tld-dim`, `/api/admin/registrar-dim`, `/api/admin/registrar-monthly`, `/api/admin/zone-diff`) are unchanged.
 
 ---
 
