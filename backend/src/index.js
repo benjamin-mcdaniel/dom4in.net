@@ -133,29 +133,36 @@ export default {
       return handleUpsertZoneDiff(request, env);
     }
 
-    if (path === "/api/admin/brand-match" && request.method === "POST") {
+    // v3 company-tracker admin endpoints
+    if (path === "/api/admin/companies" && request.method === "POST") {
       if (!requireAdmin(request, env)) return unauthorized();
-      return handleInsertBrandMatch(request, env);
+      return handleUpsertCompanies(request, env);
+    }
+    if (path === "/api/admin/tranco-ranks" && request.method === "POST") {
+      if (!requireAdmin(request, env)) return unauthorized();
+      return handleUpsertTrancoRanks(request, env);
+    }
+    if (path === "/api/admin/monthly-probe" && request.method === "POST") {
+      if (!requireAdmin(request, env)) return unauthorized();
+      return handleUpsertMonthlyProbe(request, env);
+    }
+    if (path === "/api/admin/provider-dim" && request.method === "POST") {
+      if (!requireAdmin(request, env)) return unauthorized();
+      return handleUpsertProviderDim(request, env);
+    }
+    if (path === "/api/admin/provider-share" && request.method === "POST") {
+      if (!requireAdmin(request, env)) return unauthorized();
+      return handleUpsertProviderShare(request, env);
     }
 
-    if (path === "/api/admin/watchlist" && request.method === "POST") {
-      if (!requireAdmin(request, env)) return unauthorized();
-      return handleUpsertWatchlist(request, env);
-    }
-
-    if (path === "/api/admin/watchlist" && request.method === "GET") {
-      if (!requireAdmin(request, env)) return unauthorized();
-      return handleListWatchlist(env);
-    }
-
-    // Public aggregate: how many brand matches were detected in the last 30
-    // days. Returns counts only — never the matched domains themselves.
-    // Useful for marketing copy and for prospective Brand Sentinel buyers
-    // to see "there were N exact-match brand hits across new gTLDs this
-    // month, here's roughly what you'd get if you subscribed."
-    if (path === "/api/stats/brand-matches") {
+    // v3 company-tracker public endpoints
+    if (path === "/api/stats/providers") {
       if (!(await rateLimitOk(request, env))) return rateLimitedResponse();
-      return handleBrandMatchSummary(env);
+      return handleProvidersLatest(url, env);
+    }
+    if (path === "/api/stats/providers/history") {
+      if (!(await rateLimitOk(request, env))) return rateLimitedResponse();
+      return handleProvidersHistory(url, env);
     }
 
     return new Response("Not found", { status: 404 });
@@ -773,7 +780,9 @@ async function handleUpsertZoneDiff(request, env) {
   }
 }
 
-async function handleUpsertWatchlist(request, env) {
+// -------- v3 handlers: company tracker --------
+
+async function handleUpsertCompanies(request, env) {
   const parsed = await readJson(request);
   if (!parsed.ok) return json({ error: "invalid_json" }, 400);
   const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
@@ -782,102 +791,240 @@ async function handleUpsertWatchlist(request, env) {
   let upserted = 0;
   try {
     for (const r of rows) {
-      if (typeof r.pattern !== "string" || !r.pattern) continue;
-      const pattern = r.pattern.toLowerCase();
-      // tld_filter stored as CSV in the row; arrays accepted from the API.
-      let tldFilter = r.tld_filter ?? null;
-      if (Array.isArray(tldFilter)) tldFilter = tldFilter.join(",");
+      if (typeof r.name !== "string" || typeof r.canonical_domain !== "string") continue;
+      const domain = r.canonical_domain.toLowerCase();
       await env.DB.prepare(
-        "INSERT INTO brand_watchlist (owner_email, pattern, match_type, tld_filter, notify, notes, expires_at, active) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO companies (name, canonical_domain, ticker, exchange, sec_cik, industry, " +
+          "in_sp500, in_russell1000, in_russell3000, in_us_public, notes) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(canonical_domain) DO UPDATE SET " +
+          "name = excluded.name, " +
+          "ticker = COALESCE(excluded.ticker, companies.ticker), " +
+          "exchange = COALESCE(excluded.exchange, companies.exchange), " +
+          "sec_cik = COALESCE(excluded.sec_cik, companies.sec_cik), " +
+          "industry = COALESCE(excluded.industry, companies.industry), " +
+          "in_sp500 = excluded.in_sp500, " +
+          "in_russell1000 = excluded.in_russell1000, " +
+          "in_russell3000 = excluded.in_russell3000, " +
+          "in_us_public = excluded.in_us_public, " +
+          "notes = COALESCE(excluded.notes, companies.notes), " +
+          "updated_at = datetime('now')"
       )
         .bind(
-          r.owner_email ?? null,
-          pattern,
-          r.match_type ?? "exact",
-          tldFilter,
-          r.notify ? 1 : 0,
-          r.notes ?? null,
-          r.expires_at ?? null,
-          r.active === false ? 0 : 1
+          r.name,
+          domain,
+          r.ticker ?? null,
+          r.exchange ?? null,
+          r.sec_cik ?? null,
+          r.industry ?? null,
+          r.in_sp500 ? 1 : 0,
+          r.in_russell1000 ? 1 : 0,
+          r.in_russell3000 ? 1 : 0,
+          r.in_us_public ? 1 : 0,
+          r.notes ?? null
         )
         .run();
       upserted += 1;
     }
     return json({ ok: true, upserted });
   } catch (err) {
-    return json({ error: "failed_to_upsert_watchlist", message: String(err) }, 500);
+    return json({ error: "failed_to_upsert_companies", message: String(err) }, 500);
   }
 }
 
-async function handleListWatchlist(env) {
-  try {
-    const res = await env.DB.prepare(
-      "SELECT id, owner_email, pattern, match_type, tld_filter, notify, active, created_at, expires_at " +
-        "FROM brand_watchlist WHERE active = 1 ORDER BY created_at DESC LIMIT 500"
-    ).all();
-    return json({ rows: res.results || [] });
-  } catch (err) {
-    return json({ error: "failed_to_list_watchlist", message: String(err) }, 500);
-  }
-}
-
-async function handleBrandMatchSummary(env) {
-  try {
-    // Counts only — no matched_domain or pattern values returned.
-    const last30 = await env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM brand_match_event WHERE detected_at >= datetime('now','-30 days')"
-    ).first();
-    const byTld = await env.DB.prepare(
-      "SELECT tld, COUNT(*) AS n FROM brand_match_event " +
-        "WHERE detected_at >= datetime('now','-30 days') " +
-        "GROUP BY tld ORDER BY n DESC LIMIT 20"
-    ).all();
-    return json(
-      {
-        last_30_days: Number(last30?.n) || 0,
-        top_tlds: (byTld.results || []).map((r) => ({ tld: r.tld, count: Number(r.n) || 0 })),
-      },
-      200,
-      PUBLIC_CACHE_HEADERS,
-    );
-  } catch (err) {
-    return json({ error: "failed_to_summarize_brand_matches", message: String(err) }, 500, NO_STORE_HEADERS);
-  }
-}
-
-async function handleInsertBrandMatch(request, env) {
+async function handleUpsertTrancoRanks(request, env) {
   const parsed = await readJson(request);
   if (!parsed.ok) return json({ error: "invalid_json" }, 400);
   const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
   if (!rows) return json({ error: "missing_rows" }, 400);
 
-  let inserted = 0;
+  let upserted = 0;
   try {
     for (const r of rows) {
-      if (typeof r.pattern !== "string" || typeof r.matched_domain !== "string") continue;
-      if (typeof r.tld !== "string" || typeof r.source !== "string") continue;
-      // Dedupe handled by the unique index (watchlist_id, matched_domain, source).
-      // INSERT OR IGNORE keeps the pipeline idempotent.
-      const res = await env.DB.prepare(
-        "INSERT OR IGNORE INTO brand_match_event (watchlist_id, pattern, matched_domain, tld, registrar_iana_id, registered_at, source) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?)"
+      if (typeof r.domain !== "string" || typeof r.snap_month !== "string") continue;
+      const rank = Number(r.rank);
+      if (!Number.isFinite(rank)) continue;
+      await env.DB.prepare(
+        "INSERT INTO tranco_ranks (domain, snap_month, rank) VALUES (?, ?, ?) " +
+          "ON CONFLICT(domain, snap_month) DO UPDATE SET rank = excluded.rank"
+      )
+        .bind(r.domain.toLowerCase(), r.snap_month, rank)
+        .run();
+      upserted += 1;
+    }
+    return json({ ok: true, upserted });
+  } catch (err) {
+    return json({ error: "failed_to_upsert_tranco_ranks", message: String(err) }, 500);
+  }
+}
+
+async function handleUpsertMonthlyProbe(request, env) {
+  const parsed = await readJson(request);
+  if (!parsed.ok) return json({ error: "invalid_json" }, 400);
+  const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
+  if (!rows) return json({ error: "missing_rows" }, 400);
+
+  let upserted = 0;
+  try {
+    for (const r of rows) {
+      if (typeof r.snap_month !== "string" || typeof r.domain !== "string") continue;
+      await env.DB.prepare(
+        "INSERT INTO monthly_probe (snap_month, domain, registrar_iana_id, ns_provider, ns_records_count, " +
+          "ns_country, mx_provider, has_mx, hosting_provider, a_asn, has_aaaa, dnssec, caa_present, " +
+          "cert_issuer, analytics_provider, tag_managers, marketing_stack, cdn_provider, http_server, " +
+          "probe_status, notes) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(snap_month, domain) DO UPDATE SET " +
+          "registrar_iana_id = excluded.registrar_iana_id, ns_provider = excluded.ns_provider, " +
+          "ns_records_count = excluded.ns_records_count, ns_country = excluded.ns_country, " +
+          "mx_provider = excluded.mx_provider, has_mx = excluded.has_mx, " +
+          "hosting_provider = excluded.hosting_provider, a_asn = excluded.a_asn, " +
+          "has_aaaa = excluded.has_aaaa, dnssec = excluded.dnssec, caa_present = excluded.caa_present, " +
+          "cert_issuer = excluded.cert_issuer, analytics_provider = excluded.analytics_provider, " +
+          "tag_managers = excluded.tag_managers, marketing_stack = excluded.marketing_stack, " +
+          "cdn_provider = excluded.cdn_provider, http_server = excluded.http_server, " +
+          "probe_status = excluded.probe_status, notes = excluded.notes, " +
+          "probed_at = datetime('now')"
       )
         .bind(
-          r.watchlist_id ?? null,
-          r.pattern,
-          r.matched_domain,
-          r.tld,
-          r.registrar_iana_id != null ? Number(r.registrar_iana_id) : null,
-          r.registered_at ?? null,
-          r.source
+          r.snap_month, r.domain.toLowerCase(),
+          r.registrar_iana_id ?? null, r.ns_provider ?? null, r.ns_records_count ?? null,
+          r.ns_country ?? null, r.mx_provider ?? null, r.has_mx == null ? null : (r.has_mx ? 1 : 0),
+          r.hosting_provider ?? null, r.a_asn ?? null,
+          r.has_aaaa == null ? null : (r.has_aaaa ? 1 : 0),
+          r.dnssec == null ? null : (r.dnssec ? 1 : 0),
+          r.caa_present == null ? null : (r.caa_present ? 1 : 0),
+          r.cert_issuer ?? null, r.analytics_provider ?? null, r.tag_managers ?? null,
+          r.marketing_stack ?? null, r.cdn_provider ?? null, r.http_server ?? null,
+          r.probe_status ?? "ok", r.notes ?? null
         )
         .run();
-      // D1 reports meta.changes for executed mutations
-      if (res?.meta?.changes) inserted += res.meta.changes;
+      upserted += 1;
     }
-    return json({ ok: true, inserted });
+    return json({ ok: true, upserted });
   } catch (err) {
-    return json({ error: "failed_to_insert_brand_match", message: String(err) }, 500);
+    return json({ error: "failed_to_upsert_monthly_probe", message: String(err) }, 500);
+  }
+}
+
+async function handleUpsertProviderDim(request, env) {
+  const parsed = await readJson(request);
+  if (!parsed.ok) return json({ error: "invalid_json" }, 400);
+  const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
+  if (!rows) return json({ error: "missing_rows" }, 400);
+
+  let upserted = 0;
+  try {
+    for (const r of rows) {
+      if (typeof r.provider_key !== "string" || typeof r.category !== "string") continue;
+      if (typeof r.display_name !== "string") continue;
+      await env.DB.prepare(
+        "INSERT INTO provider_dim (provider_key, category, display_name, parent, notes) " +
+          "VALUES (?, ?, ?, ?, ?) " +
+          "ON CONFLICT(provider_key) DO UPDATE SET " +
+          "category = excluded.category, display_name = excluded.display_name, " +
+          "parent = COALESCE(excluded.parent, provider_dim.parent), " +
+          "notes = COALESCE(excluded.notes, provider_dim.notes)"
+      )
+        .bind(r.provider_key, r.category, r.display_name, r.parent ?? null, r.notes ?? null)
+        .run();
+      upserted += 1;
+    }
+    return json({ ok: true, upserted });
+  } catch (err) {
+    return json({ error: "failed_to_upsert_provider_dim", message: String(err) }, 500);
+  }
+}
+
+async function handleUpsertProviderShare(request, env) {
+  const parsed = await readJson(request);
+  if (!parsed.ok) return json({ error: "invalid_json" }, 400);
+  const rows = Array.isArray(parsed.body?.rows) ? parsed.body.rows : null;
+  if (!rows) return json({ error: "missing_rows" }, 400);
+
+  let upserted = 0;
+  try {
+    for (const r of rows) {
+      if (typeof r.snap_month !== "string" || typeof r.tier !== "string") continue;
+      if (typeof r.category !== "string" || typeof r.provider_key !== "string") continue;
+      await env.DB.prepare(
+        "INSERT INTO provider_share_monthly (snap_month, tier, category, provider_key, count, total, share, delta_count, delta_share) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(snap_month, tier, category, provider_key) DO UPDATE SET " +
+          "count = excluded.count, total = excluded.total, share = excluded.share, " +
+          "delta_count = excluded.delta_count, delta_share = excluded.delta_share, " +
+          "computed_at = datetime('now')"
+      )
+        .bind(
+          r.snap_month, r.tier, r.category, r.provider_key,
+          Number(r.count) || 0, Number(r.total) || 0, Number(r.share) || 0,
+          r.delta_count != null ? Number(r.delta_count) : null,
+          r.delta_share != null ? Number(r.delta_share) : null
+        )
+        .run();
+      upserted += 1;
+    }
+    return json({ ok: true, upserted });
+  } catch (err) {
+    return json({ error: "failed_to_upsert_provider_share", message: String(err) }, 500);
+  }
+}
+
+// Public: latest month's provider shares.
+// Query params: ?tier=sp500&category=ns  (both optional; default returns all)
+async function handleProvidersLatest(url, env) {
+  try {
+    const tier = url.searchParams.get("tier");
+    const category = url.searchParams.get("category");
+    const latest = await env.DB.prepare(
+      "SELECT MAX(snap_month) AS m FROM provider_share_monthly"
+    ).first();
+    const snapMonth = latest?.m;
+    if (!snapMonth) {
+      return json({ snap_month: null, rows: [] }, 200, PUBLIC_CACHE_HEADERS);
+    }
+    let sql = "SELECT snap_month, tier, category, provider_key, count, total, share, delta_share " +
+      "FROM provider_share_monthly WHERE snap_month = ?";
+    const binds = [snapMonth];
+    if (tier) { sql += " AND tier = ?"; binds.push(tier); }
+    if (category) { sql += " AND category = ?"; binds.push(category); }
+    sql += " ORDER BY tier, category, share DESC";
+    const res = await env.DB.prepare(sql).bind(...binds).all();
+    return json(
+      { snap_month: snapMonth, rows: res.results || [] },
+      200,
+      PUBLIC_CACHE_HEADERS,
+    );
+  } catch (err) {
+    return json({ error: "failed_to_load_providers", message: String(err) }, 500, NO_STORE_HEADERS);
+  }
+}
+
+// Public: historical share for a specific tier+category — drives line charts.
+// Required: ?tier=sp500&category=ns  Optional: &months=12
+async function handleProvidersHistory(url, env) {
+  try {
+    const tier = url.searchParams.get("tier");
+    const category = url.searchParams.get("category");
+    const months = Math.min(Number(url.searchParams.get("months")) || 12, 36);
+    if (!tier || !category) {
+      return json({ error: "tier and category required" }, 400);
+    }
+    const res = await env.DB.prepare(
+      "SELECT snap_month, provider_key, count, total, share " +
+        "FROM provider_share_monthly " +
+        "WHERE tier = ? AND category = ? " +
+        "AND snap_month >= strftime('%Y-%m', date('now', ?)) " +
+        "ORDER BY snap_month ASC, share DESC"
+    )
+      .bind(tier, category, `-${months} months`)
+      .all();
+    return json(
+      { tier, category, rows: res.results || [] },
+      200,
+      PUBLIC_CACHE_HEADERS,
+    );
+  } catch (err) {
+    return json({ error: "failed_to_load_history", message: String(err) }, 500, NO_STORE_HEADERS);
   }
 }

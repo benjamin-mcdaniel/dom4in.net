@@ -188,7 +188,88 @@ Error responses (`5xx`, `429`) carry `Cache-Control: no-store` so transient fail
 
 ---
 
-## v2 — Ground-truth observatory (in progress)
+## v3 — Company infrastructure tracker (current direction, 2026-05-19)
+
+The site is pivoting from brand-watch products (dropped) to a **public DNS / infrastructure data product** with these deliverables:
+
+1. **Free monthly newsletter** — 3–5 charts + one "story of the month" on provider share movement.
+2. **Free data feed** — CSV/JSON at stable URLs, no auth. Anyone can `curl` it weekly.
+3. **Paid quarterly PDF + full CSV** — per-vertical, per-company commentary (built after ~3 months of data exist).
+
+**Corpus (free, public sources):**
+
+| Set | Size | Source |
+|---|---|---|
+| S&P 500 | 500 | Wikipedia (`List_of_S%26P_500_companies`) |
+| Russell 1000 | 1,000 | Wikipedia (`Russell_1000_Index`) |
+| All US public (Russell 3000 / SEC EDGAR) | ~6,000 | SEC EDGAR `company_tickers.json` |
+| Tranco Top 10,000 | 10,000 | tranco-list.eu (free academic) |
+
+All probed **monthly**. Stratified outputs ("Cloudflare = 18% of S&P 500, 31% of Tranco Top 100") published per tier.
+
+**Per-domain monthly probe (zero or low risk, all free):**
+- DNS: NS, MX, A/AAAA, TXT, DNSSEC, CAA records
+- IP → ASN → cloud provider (AWS / Azure / GCP / Cloudflare / Akamai / Fastly / etc.)
+- TXT-record SaaS detection (`google-site-verification`, `atlassian-domain-verification`, etc.)
+- Cert issuer (from CT logs)
+- Home-page HTML fetch with GA / GTM / framework detection — home page only, honor robots.txt, rate-limited
+
+**Aggregations published monthly:**
+- NS provider share (per tier)
+- Mail provider share (per tier)
+- Cloud / hosting provider share
+- CDN provider share
+- Analytics + marketing-stack share
+- DNSSEC adoption
+- TLD / registrar trends (sidebar, from existing collector)
+
+### v3 schema additions
+
+- `companies` — corpus, with `in_sp500` / `in_russell1000` / `in_russell3000` / `in_us_public` flags
+- `tranco_ranks` — per-(domain, month) rank, drives the top-sites tiers
+- `monthly_probe` — one row per (domain, month) with all detected providers
+- `provider_dim` — provider key → category + display name
+- `provider_share_monthly` — pre-computed rollups the public site reads directly
+
+### v3 admin endpoints
+
+All accept `{rows: [...]}`. Idempotent via `ON CONFLICT DO UPDATE`.
+
+- `POST /api/admin/companies` — upsert corpus rows
+- `POST /api/admin/tranco-ranks` — upsert Tranco ranks
+- `POST /api/admin/monthly-probe` — upsert per-domain monthly probe rows
+- `POST /api/admin/provider-dim` — upsert provider dimension
+- `POST /api/admin/provider-share` — upsert rollups
+
+### v3 public endpoints
+
+- `GET /api/stats/providers` — latest month's provider shares (params: `tier`, `category`)
+- `GET /api/stats/providers/history?tier=sp500&category=ns&months=12` — historical share for line charts
+
+### v3 manual setup
+
+1. **Apply schema migration**: `cd backend && wrangler d1 execute DOM4IN_DB --remote --file=./db/schema.sql`
+2. **Deploy Worker**: `cd backend && wrangler deploy`
+3. **Seed company corpus**: `python collector/seed/company_corpus.py` — populates `companies` and `tranco_ranks`
+4. **Add manual overrides** as needed in `collector/seed/manual_domain_overrides.json` (CIK/ticker → canonical domain) for cases where `{ticker}.com` is wrong. Re-run the seeder to update.
+
+### v3 deferred (next sessions)
+
+- Monthly probe script (`collector/monthly_probe.py`) and its GHA workflow
+- Provider detection rules (NS / MX / ASN / TXT / HTML patterns)
+- Rollup computation script
+- Multi-page frontend with menus + ECharts (Home / Public Companies / Top Websites / Domain Stats / Data / Newsletter / Methodology)
+- Newsletter (likely Buttondown or static markdown + RSS)
+
+### Removed in v3
+
+- CZDS ingestion pipeline (`collector/czds_ingest.py`, `.github/workflows/czds.yml`) — tombstoned in repo, please `git rm` them.
+- Brand Sentinel data model: `brand_watchlist` and `brand_match_event` tables are deprecated; admin/public brand endpoints removed from the Worker.
+- R2 bucket + SigV4 signing — not needed without CZDS.
+
+---
+
+## v2 — Ground-truth observatory (superseded by v3, kept for reference)
 
 The site is expanding from "probe-sampled aggregates" to a full ground-truth observatory of the global domain market, built on three free authoritative sources:
 
@@ -243,92 +324,21 @@ Public additions:
 
 ---
 
-## Manual setup checklist (you do these; everything else is automated)
+## Manual setup checklist (v3)
 
-These are the steps that require either signing into a third party, completing legal/business paperwork, or pasting a secret. Do them in this order; nothing later breaks if earlier steps are deferred — the workflows guard for missing credentials.
+Three steps. CZDS, R2, and brand-watch infra are no longer needed.
 
-### 1. Apply for ICANN CZDS access (~2 week wait)
+1. **Apply schema**: `cd backend && wrangler d1 execute DOM4IN_DB --remote --file=./db/schema.sql`
+2. **Deploy Worker**: `cd backend && wrangler deploy`
+3. **Seed corpus**: `python collector/seed/company_corpus.py`
 
-This unlocks daily zone-file diffs for all gTLDs, which is the foundation for v2. The application is free but you sign per-TLD agreements.
+Then `git rm` the two tombstoned files:
 
-1. Create an account at **https://czds.icann.org/** (use a business-sounding email — registries scrutinize signups).
-2. Add your contact details. Use phrasing like: *"Aggregate research on domain registration trends; outputs are statistical aggregates and brand-protection alerts. Per-domain detail is retained privately, never republished."*
-3. Submit a bulk-approval request: in the dashboard, **Add Multiple Zones**, paste a TLD list (start with the top ~50: `com net org io co info biz online store app dev ai xyz me uk us tv cc ...`). Most registries auto-approve; a few require a click.
-4. Once approved, generate API credentials in the portal and save them as repo secrets:
-   - `CZDS_USERNAME` — your CZDS portal email
-   - `CZDS_PASSWORD` — your CZDS portal password
-
-The `czds.yml` workflow exits cleanly until both are present, so adding them later is the only thing needed to turn ingestion on.
-
-### 2. Create a Cloudflare R2 bucket for zone snapshots
-
-CZDS snapshots are too large to fit in D1 and contain per-domain data we don't want anywhere public.
-
-1. In the Cloudflare dashboard → **R2 → Create bucket**. Name it `dom4in-zones` (or anything; you'll wire the name in step 3).
-2. **Enable Object Versioning** on the bucket (Bucket → Settings) so historical snapshots are retained for backfill/audit.
-3. **R2 → Manage R2 API Tokens → Create API Token** with read/write to that single bucket. Save:
-   - `R2_ACCOUNT_ID` (your CF account ID, also visible in the URL)
-   - `R2_ACCESS_KEY_ID`
-   - `R2_SECRET_ACCESS_KEY`
-   - `R2_BUCKET` (the bucket name)
-
-Without these the CZDS pipeline still runs but uses `/tmp` for yesterday's snapshot, meaning every domain looks "new" each run. Configure R2 before relying on diffs.
-
-### 3. Add the new repo secrets
-
-In **GitHub → Settings → Secrets and variables → Actions**, add (alongside the existing `ADMIN_API_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`):
-
-- `CZDS_USERNAME`
-- `CZDS_PASSWORD`
-- `R2_ACCOUNT_ID`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
-- `R2_BUCKET`
-
-### 4. Apply the v2 schema migration
-
-```bash
-cd backend
-wrangler d1 execute DOM4IN_DB --remote --file=./db/schema.sql
+```
+git rm collector/czds_ingest.py .github/workflows/czds.yml
 ```
 
-The schema file uses `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` throughout, so re-applying it is safe.
-
-### 5. Deploy the updated Worker
-
-```bash
-cd backend && wrangler deploy
-```
-
-This activates the new admin endpoints. Existing public endpoints are unchanged.
-
-### 6. Seed the TLD dimension table
-
-After the Worker is deployed:
-
-```bash
-python collector/seed/tld_seed.py
-```
-
-This pulls IANA's authoritative TLD list + CZDS's coverage list and populates `tld_dim`. Re-run any time to refresh.
-
-### 7. Manually trigger the first ingest runs (smoke test)
-
-In GitHub Actions:
-
-- Run **ICANN Registrar Reports** workflow manually first (no credentials needed beyond `ADMIN_API_KEY`) — this validates the schema and Worker without depending on CZDS.
-- Once CZDS credentials are saved, run **CZDS Ingest** manually. The first run is the slowest; subsequent diffs are quick.
-
-### 8. (Later, when ready to monetize) Stripe + delivery wiring
-
-Not in this batch — added in a follow-up. The hooks needed are:
-
-- Stripe Payment Link per product (PDF report, Brand Sentinel watchlist seat, CSV export).
-- One Worker route `POST /api/stripe/webhook` that verifies signatures and writes purchase records to a new `purchases` table.
-- For Brand Sentinel: on purchase, create one `brand_watchlist` row per pattern with `owner_email = customer.email` and `expires_at = +24 months`.
-- For one-shot exports: generate a signed R2 URL valid for 7 days and email it via Resend/MailChannels.
-
-No login portal is needed for the download products. A login is only needed for Brand Sentinel customers to manage their watchlist — recommend the tiny OIDC-Worker pattern on `id.dom4in.net` when that day comes.
+That's it. Next session ships the monthly probe script + GHA workflow + the multi-page ECharts frontend.
 
 ---
 

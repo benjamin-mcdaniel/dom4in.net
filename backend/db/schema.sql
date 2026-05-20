@@ -218,47 +218,132 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_tld_unique
   ON registrar_tld_coverage (iana_id, tld);
 CREATE INDEX IF NOT EXISTS idx_reg_tld_tld ON registrar_tld_coverage (tld);
 
--- Brand watch — patterns we're looking for in newly-registered domains.
--- A watchlist entry is owned either by a paying customer (owner_email set)
--- or is 'public' (owner_email NULL) for the catalog of brand reports we
--- sell on the marketplace. notify=1 means we email the owner on match.
-CREATE TABLE IF NOT EXISTS brand_watchlist (
+-- ---------------------------------------------------------------------------
+-- v3: Company-tracker pivot (2026-05-19)
+-- We dropped brand-watch entirely. dom4in.net is now a public data product
+-- on DNS / infrastructure trends, with corpora drawn from:
+--   - SEC EDGAR (all US public companies, ~6K)
+--   - Wikipedia maintained indexes (S&P 500, Russell 1000 membership)
+--   - Tranco (free academic top-1M website ranking)
+-- Each domain gets one monthly_probe row per snap_month. provider_share_monthly
+-- holds the pre-computed rollups the public site renders directly.
+-- ---------------------------------------------------------------------------
+
+-- Companies and websites we track. A row is either a public company (has
+-- ticker / sec_cik) or a top-website-only entry (ticker NULL). canonical_domain
+-- is the apex we probe; alternates (cocacola.com vs ko.com) go in `notes` until
+-- we need an alternates table.
+CREATE TABLE IF NOT EXISTS companies (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  owner_email TEXT,                    -- NULL = public/catalog pattern
-  pattern TEXT NOT NULL,               -- the brand/keyword (lower-case, no TLD)
-  match_type TEXT NOT NULL DEFAULT 'exact', -- 'exact' | 'contains' | 'fuzzy'
-  tld_filter TEXT,                     -- CSV of TLDs to scope to; NULL = all
-  notify INTEGER NOT NULL DEFAULT 0,
+  name TEXT NOT NULL,
+  canonical_domain TEXT NOT NULL,      -- apex only, lowercase
+  ticker TEXT,                          -- primary stock ticker, NULL for non-public
+  exchange TEXT,                        -- 'NYSE' | 'NASDAQ' | 'LSE' | NULL
+  sec_cik TEXT,                         -- SEC EDGAR CIK (US public companies)
+  industry TEXT,                        -- SIC sector name, free-text otherwise
+  -- Index/list membership flags. Cheap to query "all S&P 500" via flag.
+  in_sp500 INTEGER NOT NULL DEFAULT 0,
+  in_russell1000 INTEGER NOT NULL DEFAULT 0,
+  in_russell3000 INTEGER NOT NULL DEFAULT 0,
+  in_us_public INTEGER NOT NULL DEFAULT 0,   -- in SEC EDGAR public company list
   notes TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  expires_at TEXT,                     -- e.g. 24 months from purchase
-  active INTEGER NOT NULL DEFAULT 1
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_watchlist_pattern ON brand_watchlist (pattern);
-CREATE INDEX IF NOT EXISTS idx_watchlist_owner ON brand_watchlist (owner_email);
-CREATE INDEX IF NOT EXISTS idx_watchlist_active ON brand_watchlist (active);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_domain ON companies (canonical_domain);
+CREATE INDEX IF NOT EXISTS idx_companies_ticker ON companies (ticker);
+CREATE INDEX IF NOT EXISTS idx_companies_cik ON companies (sec_cik);
+CREATE INDEX IF NOT EXISTS idx_companies_sp500 ON companies (in_sp500);
+CREATE INDEX IF NOT EXISTS idx_companies_r1000 ON companies (in_russell1000);
 
--- Match events. The CZDS/RDAP pipelines emit a row here whenever a newly
--- registered domain hits a watchlist pattern. matched_domain is stored in
--- full because the value of the product IS the specific domain; it is
--- never returned by public endpoints.
-CREATE TABLE IF NOT EXISTS brand_match_event (
+-- Tranco monthly snapshot — rank within the global top-sites list. We keep
+-- ~one row per (domain, snap_month) to enable tier-based aggregations.
+-- snap_month is 'YYYY-MM' (the Tranco list date we used). A domain that
+-- falls out of the top 1M just won't have a row for that month.
+CREATE TABLE IF NOT EXISTS tranco_ranks (
+  domain TEXT NOT NULL,
+  snap_month TEXT NOT NULL,
+  rank INTEGER NOT NULL,
+  PRIMARY KEY (domain, snap_month)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tranco_month_rank ON tranco_ranks (snap_month, rank);
+
+-- One probe row per (domain, month). All optional — null means "unknown / not
+-- detected this month." Providers stored as short keys (e.g. 'cloudflare',
+-- 'route53'); provider_dim maps key -> display + category.
+CREATE TABLE IF NOT EXISTS monthly_probe (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  detected_at TEXT NOT NULL DEFAULT (datetime('now')),
-  watchlist_id INTEGER,                -- FK to brand_watchlist.id (nullable for ad-hoc scans)
-  pattern TEXT NOT NULL,
-  matched_domain TEXT NOT NULL,
-  tld TEXT NOT NULL,
+  snap_month TEXT NOT NULL,            -- 'YYYY-MM'
+  domain TEXT NOT NULL,
   registrar_iana_id INTEGER,
-  registered_at TEXT,                  -- when the domain appeared in the zone
-  source TEXT NOT NULL,                -- 'czds-diff' | 'rdap-sample' | 'probe'
-  notified INTEGER NOT NULL DEFAULT 0,
-  notified_at TEXT
+  ns_provider TEXT,
+  ns_records_count INTEGER,
+  ns_country TEXT,                      -- modal ISO-3166 from NS IPs
+  mx_provider TEXT,
+  has_mx INTEGER,
+  hosting_provider TEXT,                -- derived from A-record ASN
+  a_asn INTEGER,
+  has_aaaa INTEGER,
+  dnssec INTEGER,
+  caa_present INTEGER,
+  cert_issuer TEXT,
+  analytics_provider TEXT,              -- CSV: 'ga4,gtm,hubspot' etc
+  tag_managers TEXT,
+  marketing_stack TEXT,
+  cdn_provider TEXT,
+  http_server TEXT,
+  probe_status TEXT,                    -- 'ok' | 'no-dns' | 'timeout' | 'http-error'
+  notes TEXT,
+  probed_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_match_event_pattern ON brand_match_event (pattern, detected_at);
-CREATE INDEX IF NOT EXISTS idx_match_event_detected ON brand_match_event (detected_at);
-CREATE INDEX IF NOT EXISTS idx_match_event_watchlist ON brand_match_event (watchlist_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_match_event_dedupe
-  ON brand_match_event (watchlist_id, matched_domain, source);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_monthly_probe_unique
+  ON monthly_probe (snap_month, domain);
+CREATE INDEX IF NOT EXISTS idx_monthly_probe_domain ON monthly_probe (domain);
+
+-- Provider dimension: short-key → display name + category. Drives the
+-- chart legend and the detection rules referenced by the probe script.
+CREATE TABLE IF NOT EXISTS provider_dim (
+  provider_key TEXT PRIMARY KEY,        -- e.g. 'cloudflare'
+  category TEXT NOT NULL,               -- 'ns' | 'mx' | 'cloud' | 'cdn' | 'analytics' | 'cert' | 'marketing'
+  display_name TEXT NOT NULL,
+  parent TEXT,                          -- e.g. 'aws' for sub-providers
+  notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_dim_cat ON provider_dim (category);
+
+-- Pre-computed monthly rollups — the public site reads from here directly.
+-- One row per (snap_month, tier, category, provider_key). tier values:
+--   'sp500' | 'russell1000' | 'russell3000' | 'tranco100' | 'tranco1000'
+--   | 'tranco10000' | 'all_us_public' | 'all'
+CREATE TABLE IF NOT EXISTS provider_share_monthly (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snap_month TEXT NOT NULL,
+  tier TEXT NOT NULL,
+  category TEXT NOT NULL,
+  provider_key TEXT NOT NULL,
+  count INTEGER NOT NULL,
+  total INTEGER NOT NULL,               -- denominator for share
+  share REAL NOT NULL,                  -- count / total
+  delta_count INTEGER,                  -- vs previous month, NULL if first
+  delta_share REAL,
+  computed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_share_unique
+  ON provider_share_monthly (snap_month, tier, category, provider_key);
+CREATE INDEX IF NOT EXISTS idx_provider_share_browse
+  ON provider_share_monthly (tier, category, snap_month);
+
+-- ---------------------------------------------------------------------------
+-- DEPRECATED in v3 — brand_watchlist / brand_match_event were for the
+-- Brand Sentinel product line, which the project no longer pursues.
+-- Drop with:
+--   DROP TABLE IF EXISTS brand_match_event;
+--   DROP TABLE IF EXISTS brand_watchlist;
+-- Left here as a reminder; not declared because we don't want them
+-- re-created on a fresh DB.
+-- ---------------------------------------------------------------------------

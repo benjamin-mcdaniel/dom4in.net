@@ -1,0 +1,20 @@
+{
+  "_comment": "CIK (zero-padded or not) or lowercased ticker → canonical domain. Add entries here whenever the {ticker}.com heuristic guesses wrong. Examples below; safe to delete the examples once you have real overrides.",
+  "googl": "google.com",
+  "goog": "google.com",
+  "meta": "meta.com",
+  "fb": "meta.com",
+  "brka": "berkshirehathaway.com",
+  "brkb": "berkshirehathaway.com",
+  "jpm": "jpmorganchase.com",
+  "ko": "coca-colacompany.com",
+  "pep": "pepsico.com",
+  "ge": "ge.com",
+  "ibm": "ibm.com",
+  "msft": "microsoft.com",
+  "aapl": "apple.com",
+  "amzn": "amazon.com",
+  "nflx": "netflix.com",
+  "nvda": "nvidia.com",
+  "tsla": "tesla.com"
+}
