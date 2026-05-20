@@ -42,18 +42,21 @@ jobs:
         run: |
           wrangler d1 execute DOM4IN_DB --remote --file=./db/migrations/001_drop_brand_tables.sql
 
-      - name: Remove CZDS tombstone files
+      - name: Remove deprecated workflow + script tombstones
         run: |
           set -e
           REMOVED=0
-          if [ -f collector/czds_ingest.py ]; then
-            git rm -f collector/czds_ingest.py
-            REMOVED=1
-          fi
-          if [ -f .github/workflows/czds.yml ]; then
-            git rm -f .github/workflows/czds.yml
-            REMOVED=1
-          fi
+          for f in \
+            collector/czds_ingest.py \
+            .github/workflows/czds.yml \
+            .github/workflows/corpus-seed.yml \
+            .github/workflows/icann-reports.yml \
+          ; do
+            if [ -f "$f" ]; then
+              git rm -f "$f"
+              REMOVED=1
+            fi
+          done
           echo "removed=$REMOVED" >> "$GITHUB_OUTPUT"
         id: rm_tombstones
 

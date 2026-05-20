@@ -1,0 +1,127 @@
+name: '[auto] Monthly Data Sync'
+
+# Single monthly workflow that runs both data ingests as independent jobs:
+#
+#   1. corpus    — refreshes `companies` + `tranco_ranks` from SEC EDGAR,
+#                  Wikipedia (S&P 500), and Tranco.
+#   2. icann     — pulls ICANN's monthly per-registrar transaction reports
+#                  (canonical registrar market-share data).
+#
+# Both jobs are independent — one failing does not block the other. Both
+# upserts are idempotent so re-runs are safe.
+#
+# Replaces the old `corpus-seed.yml` and `icann-reports.yml`.
+
+on:
+  schedule:
+    - cron: '17 6 5 * *'   # 06:17 UTC on the 5th of each month
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: 'Which jobs to run: all | corpus | icann'
+        required: false
+        default: 'all'
+      tranco_limit:
+        description: 'Tranco entries to import (corpus job, default 10000)'
+        required: false
+        default: '10000'
+      icann_months_back:
+        description: 'How many recent months to attempt (icann job, default 3)'
+        required: false
+        default: '3'
+
+concurrency:
+  group: monthly-data-sync
+  cancel-in-progress: false
+
+jobs:
+  corpus:
+    if: github.event_name == 'schedule' || github.event.inputs.jobs == 'all' || github.event.inputs.jobs == 'corpus'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Refresh companies + Tranco ranks
+        env:
+          API_BASE: 'https://dom4in.net'
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+          TRANCO_LIMIT: ${{ github.event.inputs.tranco_limit || '10000' }}
+        run: python collector/seed/company_corpus.py
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v9
+        env:
+          WORKFLOW_NAME: ${{ github.workflow }} (corpus)
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const wf = process.env.WORKFLOW_NAME || 'workflow';
+            const label = 'automation-failure';
+            const ts = new Date().toISOString();
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = [
+              `Workflow **${wf}** failed.`, ``,
+              `- Time: ${ts}`,
+              `- Run: ${runUrl}`,
+              `- Trigger: ${context.eventName}`,
+            ].join('\n');
+            const open = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: label, per_page: 30,
+            });
+            const existing = open.data.find(i => i.title === `[${wf}] failing`);
+            if (existing) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: existing.number, body });
+            } else {
+              await github.rest.issues.create({ owner, repo, title: `[${wf}] failing`, body, labels: [label] });
+            }
+
+  icann:
+    if: github.event_name == 'schedule' || github.event.inputs.jobs == 'all' || github.event.inputs.jobs == 'icann'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Pull ICANN registrar reports
+        env:
+          API_BASE: 'https://dom4in.net'
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+        run: python collector/icann_registrar_reports.py --months-back ${{ github.event.inputs.icann_months_back || '3' }}
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v9
+        env:
+          WORKFLOW_NAME: ${{ github.workflow }} (icann)
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const wf = process.env.WORKFLOW_NAME || 'workflow';
+            const label = 'automation-failure';
+            const ts = new Date().toISOString();
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = [
+              `Workflow **${wf}** failed.`, ``,
+              `- Time: ${ts}`,
+              `- Run: ${runUrl}`,
+              `- Trigger: ${context.eventName}`,
+            ].join('\n');
+            const open = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: label, per_page: 30,
+            });
+            const existing = open.data.find(i => i.title === `[${wf}] failing`);
+            if (existing) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: existing.number, body });
+            } else {
+              await github.rest.issues.create({ owner, repo, title: `[${wf}] failing`, body, labels: [label] });
+            }
