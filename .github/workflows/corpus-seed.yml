@@ -1,0 +1,95 @@
+name: Corpus Seed
+
+# Refreshes the `companies` and `tranco_ranks` tables from public sources:
+#   - SEC EDGAR (US public companies)
+#   - Wikipedia (S&P 500, Russell 1000 membership)
+#   - Tranco top-1M (top sites)
+#
+# Triggered manually (Actions → Corpus Seed → Run workflow) or monthly on
+# the 2nd at 06:00 UTC. Idempotent: all admin endpoints upsert.
+#
+# Uses the same ADMIN_API_KEY repo secret the existing collector uses.
+
+on:
+  schedule:
+    - cron: '0 6 2 * *'   # 06:00 UTC on the 2nd of each month
+  workflow_dispatch:
+    inputs:
+      tranco_limit:
+        description: 'How many Tranco entries to import (default 10000)'
+        required: false
+        default: '10000'
+      skip_tranco:
+        description: 'Skip the Tranco fetch (faster iteration)'
+        required: false
+        default: 'false'
+      skip_edgar:
+        description: 'Skip the EDGAR fetch'
+        required: false
+        default: 'false'
+      api_base:
+        description: 'Override API base URL'
+        required: false
+        default: 'https://dom4in.net'
+
+concurrency:
+  group: corpus-seed
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Run corpus seeder
+        env:
+          API_BASE: ${{ github.event.inputs.api_base || 'https://dom4in.net' }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+          TRANCO_LIMIT: ${{ github.event.inputs.tranco_limit || '10000' }}
+          SKIP_TRANCO: ${{ github.event.inputs.skip_tranco == 'true' && '1' || '0' }}
+          SKIP_EDGAR: ${{ github.event.inputs.skip_edgar == 'true' && '1' || '0' }}
+        run: python collector/seed/company_corpus.py
+
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v7
+        env:
+          WORKFLOW_NAME: ${{ github.workflow }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const wf = process.env.WORKFLOW_NAME || 'workflow';
+            const label = 'automation-failure';
+            const ts = new Date().toISOString();
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = [
+              `Workflow **${wf}** failed.`,
+              ``,
+              `- Time: ${ts}`,
+              `- Run: ${runUrl}`,
+              `- Trigger: ${context.eventName}`,
+            ].join('\n');
+            const open = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: label, per_page: 30,
+            });
+            const existing = open.data.find(i => i.title === `[${wf}] failing`);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: existing.number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner, repo,
+                title: `[${wf}] failing`,
+                body,
+                labels: [label],
+              });
+            }

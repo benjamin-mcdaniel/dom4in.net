@@ -326,19 +326,29 @@ Public additions:
 
 ## Manual setup checklist (v3)
 
-Three steps. CZDS, R2, and brand-watch infra are no longer needed.
+Schema migration and Worker deploy happen once locally. Everything else runs in GitHub Actions.
 
-1. **Apply schema**: `cd backend && wrangler d1 execute DOM4IN_DB --remote --file=./db/schema.sql`
-2. **Deploy Worker**: `cd backend && wrangler deploy`
-3. **Seed corpus**: `python collector/seed/company_corpus.py`
+1. **Apply schema** (one-time, local):
+   ```
+   cd backend
+   wrangler d1 execute DOM4IN_DB --remote --file=.\db\schema.sql
+   wrangler deploy
+   ```
+2. **Trigger Corpus Seed workflow** in GitHub Actions → Corpus Seed → Run workflow. Uses the existing `ADMIN_API_KEY` repo secret. Re-runs monthly on its own cron.
 
-Then `git rm` the two tombstoned files:
+The CZDS tombstones (`collector/czds_ingest.py`, `.github/workflows/czds.yml`) are harmless stubs; `git rm` them when convenient.
 
-```
-git rm collector/czds_ingest.py .github/workflows/czds.yml
-```
+### v3 workflows
 
-That's it. Next session ships the monthly probe script + GHA workflow + the multi-page ECharts frontend.
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `collector.yml` | Cron 06/14/22 UTC + manual | Existing probe-based aggregate collector (TLD trends) |
+| `icann-reports.yml` | Cron 11:23 UTC on the 5th | Pulls ICANN monthly registrar reports |
+| `corpus-seed.yml` | Cron 06:00 UTC on the 2nd + manual | Refreshes companies + Tranco ranks |
+| `deploy-worker.yml` | Push to `main` (backend changes) | Deploys Worker via Wrangler |
+| `watchdog.yml` | Scheduled | Health checks against `/api/health` |
+
+Next session ships the monthly probe script + GHA workflow + the multi-page ECharts frontend.
 
 ---
 
